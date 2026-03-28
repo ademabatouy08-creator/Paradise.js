@@ -1,10 +1,8 @@
 const { 
     Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, 
-    ActivityType, Events, AuditLogEvent 
+    ActivityType, Events, REST, Routes, SlashCommandBuilder 
 } = require('discord.js');
-const mongoose = require('mongoose');
 
-// --- INITIALISATION DU CLIENT ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -15,58 +13,136 @@ const client = new Client({
     ]
 });
 
-// --- CONFIGURATION & CONSTANTES ---
-const CONFIG = {
-    LOG_CHANNEL: "ID_DE_TON_SALON_LOGS",
-    PREFIX: "!",
-    COOLDOWN_SPAM: 3000, // 3 secondes
-    LIMIT_SPAM: 5,        // Max 5 messages en 3s
-    AUTO_BAN_AGE: 1000 * 60 * 60 * 2, // Ban direct si compte < 2 heures (Anti-Raid)
-};
-
-// --- SCHEMA MONGODB (Historique Utilisateur) ---
-const UserSchema = new mongoose.Schema({
-    userId: String,
-    guildId: String,
-    warns: { type: Number, default: 0 },
-    mutes: { type: Number, default: 0 },
-    bans: { type: Number, default: 0 },
-    history: Array
-});
-const UserData = mongoose.model('UserData', UserSchema);
-
-// --- SYSTÈME ANTI-SPAM INTERNE ---
+// --- VARIABLES DE STOCKAGE (TEMPORAIRE) ---
+let logChannelId = null; 
+const db = new Map(); 
 const messageCache = new Map();
 
-// --- ÉVÈNEMENT : CONNEXION ---
-client.once(Events.ClientReady, async () => {
-    console.log(`✅ Connecté en tant que ${client.user.tag}`);
-    client.user.setActivity("Surveiller le serveur", { type: ActivityType.Shield });
+// --- CONFIGURATION AUTO-MOD ---
+const CONFIG = {
+    COOLDOWN_SPAM: 3000,
+    LIMIT_SPAM: 5,
+    AUTO_BAN_AGE: 1000 * 60 * 60 * 2, // 2 heures
+};
 
-    // Connexion MongoDB
+// --- ENREGISTREMENT DES SLASH COMMANDS ---
+const commands = [
+    new SlashCommandBuilder()
+        .setName('setup')
+        .setDescription('Configuration du bot')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('logs')
+                .setDescription('Définit le salon des logs de modération')
+                .addChannelOption(option => 
+                    option.setName('salon').setDescription('Le salon de logs').setRequired(true)
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Affiche l’historique d’un utilisateur')
+        .addUserOption(option => option.setName('cible').setDescription('L’utilisateur à checker')),
+    new SlashCommandBuilder()
+        .setName('ban')
+        .setDescription('Bannir un membre')
+        .addUserOption(option => option.setName('cible').setDescription('Le membre').setRequired(true))
+        .addStringOption(option => option.setName('raison').setDescription('La raison')),
+    new SlashCommandBuilder()
+        .setName('warn')
+        .setDescription('Avertir un membre')
+        .addUserOption(option => option.setName('cible').setDescription('Le membre').setRequired(true))
+        .addStringOption(option => option.setName('raison').setDescription('La raison')),
+].map(command => command.toJSON());
+
+// --- ÉVÈNEMENT : DÉMARRAGE ---
+client.once(Events.ClientReady, async () => {
+    console.log(`✅ Paradise Bot est en ligne : ${client.user.tag}`);
+    client.user.setActivity("Paradise - /setup", { type: ActivityType.Shield });
+
+    const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
     try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log("🍃 Connecté à MongoDB Atlas");
-    } catch (err) {
-        console.error("❌ Erreur MongoDB:", err);
+        console.log('🔄 Actualisation des commandes slash...');
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: commands },
+        );
+        console.log('✅ Commandes slash enregistrées !');
+    } catch (error) {
+        console.error(error);
     }
 });
 
-// --- SYSTÈME D'AUTO-MODÉRATION (SANS STAFF) ---
-client.on(Events.MessageCreate, async (message) => {
+// --- GESTION DES COMMANDES SLASH ---
+client.on(Events.InteractionCreate, async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName, options, guild, member } = interaction;
+
+    // 1. /setup logs
+    if (commandName === 'setup') {
+        if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            return interaction.reply({ content: "❌ Tu dois être Admin !", ephemeral: true });
+        }
+        if (options.getSubcommand() === 'logs') {
+            const channel = options.getChannel('salon');
+            logChannelId = channel.id;
+            return interaction.reply(`✅ Le salon de logs a été défini sur ${channel}.`);
+        }
+    }
+
+    // 2. /ban
+    if (commandName === 'ban') {
+        if (!member.permissions.has(PermissionsBitField.Flags.BanMembers)) return interaction.reply("Permission manquante.");
+        const target = options.getUser('cible');
+        const reason = options.getString('raison') || "Aucune raison";
+        
+        await guild.members.ban(target, { reason }).catch(() => {});
+        updateStats(target.id, 'ban');
+        logToChannel("Ban", target, reason, interaction.user);
+        interaction.reply(`🔨 ${target.tag} a été banni.`);
+    }
+
+    // 3. /warn
+    if (commandName === 'warn') {
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageMessages)) return interaction.reply("Permission manquante.");
+        const target = options.getUser('cible');
+        const reason = options.getString('raison') || "Avertissement manuel";
+        
+        updateStats(target.id, 'warn');
+        logToChannel("Warn", target, reason, interaction.user);
+        interaction.reply(`⚠️ ${target.tag} a été averti.`);
+    }
+
+    // 4. /stats
+    if (commandName === 'stats') {
+        const target = options.getUser('cible') || interaction.user;
+        const s = db.get(target.id) || { warns: 0, bans: 0 };
+        const embed = new EmbedBuilder()
+            .setTitle(`Historique : ${target.username}`)
+            .setColor("#5865F2")
+            .addFields(
+                { name: "⚠️ Warns", value: `${s.warns}`, inline: true },
+                { name: "🔨 Bans", value: `${s.bans}`, inline: true }
+            );
+        interaction.reply({ embeds: [embed] });
+    }
+});
+
+// --- AUTO-MODÉRATION (ANTI-PUB & SPAM) ---
+client.on(Events.MessageCreate, async message => {
     if (message.author.bot || !message.guild) return;
 
-    const authorId = message.author.id;
-    const now = Date.now();
-
-    // 1. Détection Anti-Pub (Discord & Liens Externes)
+    // Anti-Pub
     const inviteLinks = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/.+/g;
     if (inviteLinks.test(message.content)) {
         await message.delete().catch(() => {});
-        return handleViolation(message.author, message.guild, "Publicité interdite", "Warn/Delete");
+        logToChannel("Auto-Mod", message.author, "Lien publicitaire détecté");
     }
 
-    // 2. Détection Anti-Spam
+    // Anti-Spam
+    const authorId = message.author.id;
+    const now = Date.now();
     if (!messageCache.has(authorId)) {
         messageCache.set(authorId, { count: 1, lastTime: now });
     } else {
@@ -74,120 +150,44 @@ client.on(Events.MessageCreate, async (message) => {
         if (now - data.lastTime < CONFIG.COOLDOWN_SPAM) {
             data.count++;
             if (data.count === CONFIG.LIMIT_SPAM) {
-                await message.member.timeout(600000, "Spam intensif (Auto-Mod)"); // 10 min
-                message.channel.send(`🔇 ${message.author} a été mute 10 min pour spam.`);
-                logToChannel("Auto-Mute", message.author, "Spamming");
+                await message.member.timeout(600000, "Spamming").catch(() => {});
+                logToChannel("Auto-Mute", message.author, "Spam excessif (10 min)");
             }
         } else {
             data.count = 1;
             data.lastTime = now;
         }
     }
-
-    // 3. Commandes de Modération Manuelle
-    if (message.content.startsWith(CONFIG.PREFIX)) {
-        const args = message.content.slice(CONFIG.PREFIX.length).trim().split(/ +/);
-        const command = args.shift().toLowerCase();
-
-        // Commande : !ban @user raison
-        if (command === "ban") {
-            if (!message.member.permissions.has(PermissionsBitField.Flags.BanMembers)) return;
-            const target = message.mentions.members.first();
-            if (!target) return message.reply("Utilisateur introuvable.");
-            const reason = args.slice(1).join(" ") || "Aucune raison";
-            
-            await target.ban({ reason });
-            await updateDatabase(target.id, message.guild.id, "ban", reason);
-            logToChannel("Ban", target.user, reason, message.author);
-            message.channel.send(`🔨 ${target.user.tag} a été banni.`);
-        }
-
-        // Commande : !warn @user raison
-        if (command === "warn") {
-            if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) return;
-            const target = message.mentions.users.first();
-            if (!target) return message.reply("Utilisateur introuvable.");
-            const reason = args.slice(1).join(" ") || "Aucune raison";
-
-            await updateDatabase(target.id, message.guild.id, "warn", reason);
-            logToChannel("Warn", target, reason, message.author);
-            message.channel.send(`⚠️ ${target.tag} a été averti.`);
-        }
-
-        // Commande : !stats @user (Affiche l'historique complet)
-        if (command === "stats") {
-            const target = message.mentions.users.first() || message.author;
-            const data = await UserData.findOne({ userId: target.id, guildId: message.guild.id });
-
-            const statsEmbed = new EmbedBuilder()
-                .setTitle(`Historique de ${target.username}`)
-                .setColor("#5865F2")
-                .setThumbnail(target.displayAvatarURL())
-                .addFields(
-                    { name: "Avertissements", value: `${data?.warns || 0}`, inline: true },
-                    { name: "Mutes", value: `${data?.mutes || 0}`, inline: true },
-                    { name: "Bans", value: `${data?.bans || 0}`, inline: true }
-                )
-                .setFooter({ text: "Données extraites de la base MongoDB" });
-
-            message.channel.send({ embeds: [statsEmbed] });
-        }
-    }
-});
-
-// --- GESTION DES NOUVEAUX ARRIVANTS (ANTI-RAID) ---
-client.on(Events.GuildMemberAdd, async (member) => {
-    const accountAge = Date.now() - member.user.createdTimestamp;
-
-    if (accountAge < CONFIG.AUTO_BAN_AGE) {
-        await member.send("Votre compte est trop récent pour rejoindre ce serveur (Sécurité Anti-Raid).").catch(() => {});
-        await member.kick("Compte suspect (Moins de 2h)");
-        logToChannel("Anti-Raid", member.user, "Compte créé il y a moins de 2 heures");
-    }
 });
 
 // --- FONCTIONS UTILITAIRES ---
-
-async function updateDatabase(userId, guildId, type, reason) {
-    let user = await UserData.findOne({ userId, guildId });
-    if (!user) user = new UserData({ userId, guildId, history: [] });
-
-    if (type === "warn") user.warns++;
-    if (type === "mute") user.mutes++;
-    if (type === "ban") user.bans++;
-
-    user.history.push({ type, reason, date: new Date().toLocaleString() });
-    await user.save();
+function updateStats(userId, type) {
+    if (!db.has(userId)) db.set(userId, { warns: 0, bans: 0 });
+    const s = db.get(userId);
+    if (type === 'warn') s.warns++;
+    if (type === 'ban') s.bans++;
 }
 
-async function logToChannel(action, target, reason, moderator = "Système Automatique") {
-    const channel = client.channels.cache.get(CONFIG.LOG_CHANNEL);
+async function logToChannel(action, target, reason, mod = "Système Paradise") {
+    if (!logChannelId) return;
+    const channel = client.channels.cache.get(logChannelId);
     if (!channel) return;
 
-    // Récupération des stats DB pour l'embed
-    const data = await UserData.findOne({ userId: target.id });
-
+    const s = db.get(target.id) || { warns: 0, bans: 0 };
     const embed = new EmbedBuilder()
-        .setTitle(`[LOG] Action : ${action}`)
-        .setColor(action.includes("Ban") ? "#d00000" : "#ffaa00")
-        .setThumbnail(target.displayAvatarURL())
+        .setTitle(`Récapitulatif - ${action}`)
+        .setColor(action.includes("Ban") ? "#ff0000" : "#5865f2")
+        .setThumbnail(target.displayAvatarURL?.() || null)
         .addFields(
-            { name: "Utilisateur", value: `${target.tag} (${target.id})`, inline: false },
-            { name: "Modérateur", value: `${moderator}`, inline: true },
-            { name: "Raison", value: reason, inline: true },
-            { name: "Historique Cumulé", value: `⚠️ ${data?.warns || 0} | 🔇 ${data?.mutes || 0} | 🔨 ${data?.bans || 0}` }
+            { name: "Utilisateur", value: `${target.tag}`, inline: true },
+            { name: "Modérateur", value: `${mod.username || mod}`, inline: true },
+            { name: "Raison", value: reason },
+            { name: "Historique", value: `⚠️ ${s.warns} Warns | 🔨 ${s.bans} Bans` }
         )
         .setTimestamp();
 
     channel.send({ embeds: [embed] });
 }
 
-async function handleViolation(user, guild, reason, actionType) {
-    await updateDatabase(user.id, guild.id, "warn", reason);
-    logToChannel("Auto-Warn", user, reason);
-}
-
-// --- GESTION DES ERREURS POUR EVITER LE CRASH SUR RENDER ---
-process.on('unhandledRejection', error => console.error('Erreur non gérée :', error));
-
+process.on('unhandledRejection', error => console.error(error));
 client.login(process.env.TOKEN);
