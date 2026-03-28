@@ -1,7 +1,7 @@
 {
-  "name": "paradise-bot-slash",
-  "version": "1.1.0",
-  "description": "Bot de modération Paradise avec Slash Commands et Auto-Mod",
+  "name": "paradise-ultra-mod",
+  "version": "2.0.0",
+  "description": "Bot Paradise Modération Pro",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -13,7 +13,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "author": "Jigsaw",
-  "license": "ISC"
+  }
 }
