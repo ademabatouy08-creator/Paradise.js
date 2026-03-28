@@ -1344,40 +1344,42 @@ client.on(Events.MessageUpdate, async (oldMsg, newMsg) => {
     logChan.send({ embeds: [emb] }).catch(() => {});
 });
 
-// Membre qui rejoint → bienvenue + log
 client.on(Events.GuildMemberAdd, async member => {
     if (db.config.welcome) {
-        const chan = member.guild.channels.cache.get(db.config.welcome);
-        if (chan) {
-            const emb = new EmbedBuilder()
-                .setTitle(`👋 Bienvenue ${member.user.username} !`)
-                .setDescription(`Bienvenue sur **${member.guild.name}** ! Tu es le membre **#${member.guild.memberCount}**.`)
-                .setColor("#2ecc71")
-                .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-                .setImage(db.config.gifs.welcome)
-                .setTimestamp();
-            chan.send({ content: `<@${member.id}>`, embeds: [emb] }).catch(() => {});
-        }
+        try {
+            const chan = await member.guild.channels.fetch(db.config.welcome);
+            if (chan && chan.isTextBased()) {
+                const emb = new EmbedBuilder()
+                    .setTitle(`👋 Bienvenue ${member.user.username} !`)
+                    .setDescription(`Bienvenue sur **${member.guild.name}** ! Tu es le membre **#${member.guild.memberCount}**.`)
+                    .setColor("#2ecc71")
+                    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+                    .setImage(db.config.gifs.welcome)
+                    .setTimestamp();
+                await chan.send({ content: `<@${member.id}>`, embeds: [emb] });
+            }
+        } catch(e) { console.error("Erreur welcome:", e); }
     }
 
     if (db.config.logs) {
-        const logChan = member.guild.channels.cache.get(db.config.logs);
-        if (logChan) {
-            const emb = new EmbedBuilder()
-                .setTitle("📥 NOUVEAU MEMBRE")
-                .setColor("#2ecc71")
-                .addFields(
-                    { name: "Membre", value: `${member.user.tag} (<@${member.id}>)`, inline: true },
-                    { name: "ID", value: member.id, inline: true },
-                    { name: "Compte créé", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
-                )
-                .setThumbnail(member.user.displayAvatarURL())
-                .setTimestamp();
-            logChan.send({ embeds: [emb] }).catch(() => {});
-        }
+        try {
+            const logChan = await member.guild.channels.fetch(db.config.logs);
+            if (logChan && logChan.isTextBased()) {
+                const emb = new EmbedBuilder()
+                    .setTitle("📥 NOUVEAU MEMBRE")
+                    .setColor("#2ecc71")
+                    .addFields(
+                        { name: "Membre", value: `${member.user.tag} (<@${member.id}>)`, inline: true },
+                        { name: "ID", value: member.id, inline: true },
+                        { name: "Compte créé", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
+                    )
+                    .setThumbnail(member.user.displayAvatarURL())
+                    .setTimestamp();
+                await logChan.send({ embeds: [emb] });
+            }
+        } catch(e) { console.error("Erreur log membre:", e); }
     }
 
-    // Initialiser l'utilisateur
     initUser(member.id);
     save();
 });
