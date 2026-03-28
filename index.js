@@ -246,12 +246,24 @@ const commands = [
 async function askMistral(q) {
     try {
         const res = await axios.post(
-            "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
-            { inputs: `<s>[INST] ${db.config.ai_identity}\nQuestion: ${q} [/INST]` },
-            { headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` }, timeout: 15000 }
+            "https://api.mistral.ai/v1/chat/completions",
+            {
+                model: "mistral-small-latest", // gratuit
+                messages: [
+                    { role: "system", content: db.config.ai_identity },
+                    { role: "user", content: q }
+                ],
+                max_tokens: 1000
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                timeout: 15000
+            }
         );
-        const text = res.data[0]?.generated_text || "";
-        return text.split('[/INST]')[1]?.trim() || "Analyse terminée, aucune donnée supplémentaire.";
+        return res.data.choices[0].message.content.trim();
     } catch (e) {
         return `⚠️ Liaison IA interrompue : ${e.message}`;
     }
