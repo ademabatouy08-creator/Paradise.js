@@ -1,17 +1,20 @@
 {
-  "name": "paradise-ultra-mod",
-  "version": "2.0.0",
-  "description": "Bot Paradise Modération Pro",
+  "name": "paradise-overlord-v17",
+  "version": "1.0.0",
+  "description": "Système de sécurité Overlord avec Modération Radicale et Factures Pro",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "@discordjs/rest": "^2.2.0",
-    "discord-api-types": "^0.37.67"
+    "axios": "^1.6.7",
+    "fs": "0.0.1-security",
+    "http": "0.0.1-security"
   },
   "engines": {
-    "node": ">=18.0.0"
-  }
+    "node": ">=18.x"
+  },
+  "author": "Paradise Dev",
+  "license": "ISC"
 }
