@@ -1,16 +1,19 @@
 {
-  "name": "bot-auto-mod",
-  "version": "1.0.0",
-  "description": "Bot de modération autonome pour Render",
+  "name": "paradise-bot-slash",
+  "version": "1.1.0",
+  "description": "Bot de modération Paradise avec Slash Commands et Auto-Mod",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "mongoose": "^8.2.0"
+    "@discordjs/rest": "^2.2.0",
+    "discord-api-types": "^0.37.67"
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "author": "Jigsaw",
+  "license": "ISC"
 }
