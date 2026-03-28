@@ -2,256 +2,197 @@ const {
     Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, 
     ActivityType, Events, REST, Routes, SlashCommandBuilder,
     ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType,
-    Collection
+    StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle
 } = require('discord.js');
 const http = require('http');
+const fs = require('fs');
 
-// --- 1. SERVEUR DE MAINTIEN RENDER ---
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.write("Paradise Bot System: Online & Active");
-    res.end();
-}).listen(process.env.PORT || 10000);
+// --- 1. MOTEUR DE DONNÉES (PERSISTANT) ---
+const DB_PATH = './paradise_db.json';
+let db = {
+    config: {
+        logs: null, staffRole: null, ticketCat: null, welcomeChan: null,
+        welcomeGif: "https://i.ibb.co/L6Zz7nQ/welcome.gif",
+        autoMod: true,
+        thresholds: { mute: 3, kick: 5, ban: 10 }
+    },
+    users: {} // { userId: { warns: 0, bans: 0, mutes: 0, kicks: 0, history: [] } }
+};
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildPresences
-    ]
-});
+if (fs.existsSync(DB_PATH)) db = JSON.parse(fs.readFileSync(DB_PATH));
+const saveDB = () => fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 
-// --- 2. STORAGE (Map() simulant une DB) ---
-const db = new Map(); // Stocke : { warnCount, history, notes, balance }
-const settings = { logChannel: null, staffRole: null, announcementChannel: null };
+const client = new Client({ intents: 3276799 });
+http.createServer((req, res) => { res.write("Paradise Ultimate Engine Online"); res.end(); }).listen(process.env.PORT || 10000);
 
-// --- 3. DÉFINITION DES COMMANDES SLASH ---
+// --- 2. REGISTRE DES COMMANDES ---
 const commands = [
-    // --- IMMOBILIER & FACTURES ---
-    new SlashCommandBuilder()
-        .setName('facture')
-        .setDescription('Vendre une maison (Calcul TVA 20% automatique)')
-        .addUserOption(o => o.setName('client').setDescription('L’acheteur').setRequired(true))
-        .addStringOption(o => o.setName('entreprise').setDescription('Nom de l’agence').setRequired(true))
-        .addNumberOption(o => o.setName('montant_ht').setDescription('Prix HT').setRequired(true))
-        .addStringOption(o => o.setName('raison').setDescription('Adresse de la propriété').setRequired(true)),
-
-    // --- STAFF & ABSENCE ---
-    new SlashCommandBuilder()
-        .setName('absence')
-        .setDescription('Déclarer une absence staff')
-        .addStringOption(o => o.setName('raison').setDescription('Raison').setRequired(true))
-        .addStringOption(o => o.setName('durée').setDescription('Ex: 1 semaine').setRequired(true)),
-
-    // --- MODÉRATION AVANCÉE ---
-    new SlashCommandBuilder()
-        .setName('warn')
-        .setDescription('Avertir un membre')
-        .addUserOption(o => o.setName('cible').setDescription('Le fautif').setRequired(true))
-        .addStringOption(o => o.setName('raison').setDescription('Motif du warn').setRequired(true)),
-
-    new SlashCommandBuilder()
-        .setName('stats')
-        .setDescription('Dossier complet d’un joueur (Warns + Notes)')
-        .addUserOption(o => o.setName('cible').setDescription('L’utilisateur')),
-
-    new SlashCommandBuilder()
-        .setName('note')
-        .setDescription('Ajouter un pense-bête sur un joueur (Visible uniquement par le staff)')
-        .addUserOption(o => o.setName('cible').setDescription('Le joueur').setRequired(true))
-        .addStringOption(o => o.setName('texte').setDescription('La note à enregistrer').setRequired(true)),
-
-    new SlashCommandBuilder()
-        .setName('clear')
-        .setDescription('Nettoyer le chat')
-        .addIntegerOption(o => o.setName('nombre').setDescription('Messages (1-100)').setRequired(true)),
-
-    // --- ADMINISTRATION & MESSAGE ---
-    new SlashCommandBuilder()
-        .setName('message')
-        .setDescription('Créer un embed pro')
-        .addStringOption(o => o.setName('titre').setDescription('Titre').setRequired(true))
-        .addStringOption(o => o.setName('contenu').setDescription('Texte (\\n pour ligne)').setRequired(true))
-        .addStringOption(o => o.setName('couleur').setDescription('HEX (ex: #00ff00)')),
-
-    new SlashCommandBuilder()
-        .setName('setup')
-        .setDescription('Configuration intégrale du serveur')
-        .addSubcommand(s => s.setName('logs').setDescription('Salon des logs').addChannelOption(o => o.setName('salon').setDescription('Le salon').setRequired(true)))
-        .addSubcommand(s => s.setName('staff').setDescription('Rôle staff').addRoleOption(o => o.setName('role').setDescription('Le rôle').setRequired(true))),
-
-    // --- FUN & "INUTILE" ---
-    new SlashCommandBuilder().setName('humeur').setDescription('Comment se sent le bot aujourd’hui ?'),
-    new SlashCommandBuilder().setName('pile_ou_face').setDescription('Lancer une pièce'),
-    new SlashCommandBuilder().setName('8ball').setDescription('Poser une question au destin').addStringOption(o => o.setName('question').setDescription('Votre question').setRequired(true)),
-    new SlashCommandBuilder().setName('serverinfo').setDescription('Infos techniques du serveur'),
-
+    // CONFIGURATION
+    new SlashCommandBuilder().setName('setup').setDescription('⚙️ Configuration complète du serveur Paradise'),
+    
+    // MODÉRATION
+    new SlashCommandBuilder().setName('stats').setDescription('📊 Dossier judiciaire complet').addUserOption(o => o.setName('cible').setDescription('Joueur à vérifier')),
+    new SlashCommandBuilder().setName('warn').setDescription('⚠️ Sanctionner un joueur').addUserOption(o => o.setName('cible').setRequired(true)).addStringOption(o => o.setName('raison').setRequired(true)),
+    new SlashCommandBuilder().setName('clear').setDescription('🧹 Nettoyage industriel du chat').addIntegerOption(o => o.setName('nombre').setRequired(true)),
+    
+    // RP & IMMOBILIER
+    new SlashCommandBuilder().setName('facture').setDescription('🏠 Vente Immobilière (Calcul TVA)').addUserOption(o => o.setName('client').setRequired(true)).addStringOption(o => o.setName('agence').setRequired(true)).addNumberOption(o => o.setName('prix_ht').setRequired(true)).addStringOption(o => o.setName('maison').setRequired(true)),
+    new SlashCommandBuilder().setName('absence').setDescription('💤 Déclarer une absence staff').addStringOption(o => o.setName('raison').setRequired(true)).addStringOption(o => o.setName('durée').setRequired(true)),
+    
+    // COMMUNICATION
+    new SlashCommandBuilder().setName('message').setDescription('📝 Créer une annonce pro (Modal)'),
+    new SlashCommandBuilder().setName('ticket-panel').setDescription('📩 Installer le support ticket'),
 ].map(c => c.toJSON());
 
-// --- 4. READY ---
+// --- 3. DÉMARRAGE ---
 client.once(Events.ClientReady, async () => {
-    console.log(`🚀 Paradise Bot connecté : ${client.user.tag}`);
-    client.user.setActivity("veiller sur Paradise", { type: ActivityType.Watching });
-
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-    try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('✅ Synchronisation Slash Commands OK');
-    } catch (e) { console.error(e); }
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    console.log(`💎 PARADISE ULTIMATE : ${client.user.tag} est prêt.`);
+    client.user.setActivity("veiller sur Paradise", { type: ActivityType.Watching });
 });
 
-// --- 5. LOGIQUE DES INTERACTIONS ---
+// --- 4. GESTION DES INTERACTIONS ---
 client.on(Events.InteractionCreate, async interaction => {
+    
+    // --- COMMANDES SLASH ---
     if (interaction.isChatInputCommand()) {
-        const { commandName, options, guild, member, user, channel } = interaction;
+        const { commandName, options, member, guild, user } = interaction;
 
-        // --- FACTURE IMMOBILIÈRE ---
-        if (commandName === 'facture') {
-            const target = options.getUser('client');
-            const ent = options.getString('entreprise');
-            const ht = options.getNumber('montant_ht');
-            const raison = options.getString('raison');
-            const ttc = ht * 1.20;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`🏠 CONTRAT DE VENTE - ${ent}`)
-                .setColor("#2ecc71")
+        // DASHBOARD SETUP
+        if (commandName === 'setup') {
+            if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "❌ Réservé aux Fondateurs.", ephemeral: true });
+            
+            const emb = new EmbedBuilder()
+                .setTitle("⚙️ Configuration Paradise Engine")
+                .setDescription("Choisissez le module à configurer ci-dessous.")
                 .addFields(
-                    { name: "👤 Acheteur", value: `${target}`, inline: true },
-                    { name: "📍 Adresse", value: `\`${raison}\``, inline: true },
-                    { name: "🧾 Facturation", value: `HT : **${ht.toLocaleString()}€**\nTVA (20%) : **${(ht * 0.2).toLocaleString()}€**\n**TOTAL TTC : ${ttc.toLocaleString()}€**` },
-                    { name: "🔄 Calcul Rapide", value: `*${ht}€ HT × 1,20 = ${ttc}€ TTC*` }
-                )
-                .setFooter({ text: "Paradise Immo System" }).setTimestamp();
+                    { name: "🛡️ Sécurité", value: db.config.autoMod ? "✅ Activée" : "❌ Désactivée", inline: true },
+                    { name: "📜 Logs", value: db.config.logs ? `<#${db.config.logs}>` : "❌ Non défini", inline: true }
+                ).setColor("#2b2d31");
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`fact_ok_${user.id}_${ttc}`).setLabel('Signer').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId(`fact_no_${user.id}`).setLabel('Refuser').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('conf_logs').setLabel('Logs').setStyle(ButtonStyle.Secondary).setEmoji('📜'),
+                new ButtonBuilder().setCustomId('conf_staff').setLabel('Rôle Staff').setStyle(ButtonStyle.Secondary).setEmoji('👮'),
+                new ButtonBuilder().setCustomId('conf_welcome').setLabel('Bienvenue').setStyle(ButtonStyle.Secondary).setEmoji('👋'),
+                new ButtonBuilder().setCustomId('conf_security').setLabel('Anti-Insulte').setStyle(ButtonStyle.Danger).setEmoji('🛡️')
             );
-
-            try {
-                await target.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: `✅ Contrat envoyé à ${target.username}.`, ephemeral: true });
-            } catch { return interaction.reply({ content: "❌ MP fermés.", ephemeral: true }); }
+            return interaction.reply({ embeds: [emb], components: [row], ephemeral: true });
         }
 
-        // --- STATS DÉTAILLÉES ---
+        // STATS DÉTAILLÉES (BEAUTÉ MAXIMALE)
         if (commandName === 'stats') {
             const target = options.getUser('cible') || user;
-            const data = db.get(target.id) || { warnCount: 0, history: [], notes: [] };
+            const u = db.users[target.id] || { warns: 0, bans: 0, mutes: 0, kicks: 0, history: [] };
 
-            const embed = new EmbedBuilder()
-                .setTitle(`📂 Dossier Joueur : ${target.tag}`)
-                .setThumbnail(target.displayAvatarURL())
-                .setColor("#3498db")
+            const statEmb = new EmbedBuilder()
+                .setTitle(`📊 Dossier Judiciaire : ${target.username}`)
+                .setThumbnail(target.displayAvatarURL({ dynamic: true }))
+                .setColor(u.warns > 5 ? "#e74c3c" : "#3498db")
                 .addFields(
-                    { name: "⚠️ Warns", value: `**${data.warnCount}**`, inline: true },
-                    { name: "📝 Pense-bêtes", value: `**${data.notes.length}**`, inline: true },
-                    { name: "📅 Arrivée", value: `<t:${Math.floor(guild.members.cache.get(target.id)?.joinedTimestamp / 1000)}:R>`, inline: false }
-                );
+                    { name: "⚠️ Avertissements", value: `\`${u.warns}\``, inline: true },
+                    { name: "🔇 Mutes", value: `\`${u.mutes}\``, inline: true },
+                    { name: "👞 Kicks", value: `\`${u.kicks}\``, inline: true },
+                    { name: "🔨 Bannissements", value: `\`${u.bans}\``, inline: true },
+                    { name: "📅 Ancienneté", value: `<t:${Math.floor(guild.members.cache.get(target.id)?.joinedTimestamp / 1000)}:R>`, inline: false }
+                )
+                .setFooter({ text: "Paradise Police Department" }).setTimestamp();
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`view_warns_${target.id}`).setLabel('Détails Warns (+)').setStyle(ButtonStyle.Primary).setDisabled(data.warnCount === 0),
-                new ButtonBuilder().setCustomId(`view_notes_${target.id}`).setLabel('Pense-bêtes Staff').setStyle(ButtonStyle.Secondary).setDisabled(data.notes.length === 0)
+                new ButtonBuilder().setCustomId(`hist_${target.id}`).setLabel('Voir l\'Historique (+)').setStyle(ButtonStyle.Primary).setDisabled(u.history.length === 0)
             );
-
-            return interaction.reply({ embeds: [embed], components: [row] });
+            return interaction.reply({ embeds: [statEmb], components: [row] });
         }
 
-        // --- NOTE (PENSE-BÊTE) ---
-        if (commandName === 'note') {
-            if (!member.permissions.has(PermissionsBitField.Flags.ManageMessages)) return interaction.reply("❌ Staff uniquement.");
-            const target = options.getUser('cible');
-            const txt = options.getString('texte');
-
-            if (!db.has(target.id)) db.set(target.id, { warnCount: 0, history: [], notes: [] });
-            db.get(target.id).notes.push({ content: txt, mod: user.tag, date: new Date().toLocaleDateString() });
-
-            return interaction.reply({ content: `✅ Note ajoutée sur le profil de **${target.tag}**.`, ephemeral: true });
-        }
-
-        // --- ABSENCE STAFF ---
-        if (commandName === 'absence') {
-            const r = options.getString('raison');
-            const d = options.getString('durée');
-            const staffRoles = member.roles.cache.filter(r => r.name !== "@everyone").map(r => r).join(' ') || "Aucun";
-
-            const absEmbed = new EmbedBuilder()
-                .setTitle("Récapitulatif d'absence - Validée")
-                .setColor("#2b2d31")
+        // FACTURE IMMO
+        if (commandName === 'facture') {
+            const target = options.getUser('client');
+            const ht = options.getNumber('prix_ht');
+            const ttc = ht * 1.20;
+            
+            const factEmb = new EmbedBuilder()
+                .setTitle(`🏠 CONTRAT DE VENTE - ${options.getString('agence')}`)
+                .setColor("#2ecc71").setThumbnail("https://i.giphy.com/media/LdOyjZ7TC5K3LghXYf/giphy.gif")
+                .setDescription(`Un nouveau contrat a été édité pour l'adresse :\n**${options.getString('maison')}**`)
                 .addFields(
-                    { name: "Utilisateur", value: `${user}`, inline: false },
-                    { name: "Raison", value: r, inline: false },
-                    { name: "Durée", value: d, inline: true },
-                    { name: "Rôles", value: staffRoles, inline: false },
-                    { name: "Traité par", value: `${client.user}`, inline: true }
-                );
-            return interaction.reply({ embeds: [absEmbed] });
+                    { name: "💰 Prix Net (HT)", value: `\`${ht.toLocaleString()}€\``, inline: true },
+                    { name: "🏦 Taxes (20%)", value: `\`${(ht * 0.2).toLocaleString()}€\``, inline: true },
+                    { name: "💎 MONTANT TTC", value: `**${ttc.toLocaleString()}€**` }
+                )
+                .setFooter({ text: "Calcul : Prix HT × 1,20 = Prix TTC" });
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`pay_yes_${user.id}_${ttc}`).setLabel('Signer et Payer').setStyle(ButtonStyle.Success).setEmoji('🖋️'),
+                new ButtonBuilder().setCustomId('pay_no').setLabel('Refuser l\'offre').setStyle(ButtonStyle.Danger)
+            );
+            await target.send({ embeds: [factEmb], components: [row] }).catch(() => {});
+            return interaction.reply({ content: `✅ Contrat envoyé à ${target.username}.`, ephemeral: true });
         }
 
-        // --- MESSAGE (SAY) ---
+        // MESSAGE MODAL
         if (commandName === 'message') {
-            const titre = options.getString('titre');
-            const texte = options.getString('contenu').replace(/\\n/g, '\n');
-            const couleur = options.getString('couleur') || "#2b2d31";
-
-            const msgEmbed = new EmbedBuilder().setTitle(titre).setDescription(texte).setColor(couleur.startsWith('#') ? couleur : "#2b2d31");
-            await channel.send({ embeds: [msgEmbed] });
-            return interaction.reply({ content: "✅ Envoyé.", ephemeral: true });
+            const modal = new ModalBuilder().setCustomId('m_say').setTitle('Créateur d\'Annonce Paradise');
+            const tInput = new TextInputBuilder().setCustomId('t').setLabel('Titre').setStyle(TextInputStyle.Short).setRequired(true);
+            const cInput = new TextInputBuilder().setCustomId('c').setLabel('Message').setStyle(TextInputStyle.Paragraph).setRequired(true);
+            const iInput = new TextInputBuilder().setCustomId('i').setLabel('URL Image/GIF').setStyle(TextInputStyle.Short).setRequired(false);
+            
+            modal.addComponents(new ActionRowBuilder().addComponents(tInput), new ActionRowBuilder().addComponents(cInput), new ActionRowBuilder().addComponents(iInput));
+            await interaction.showModal(modal);
         }
 
-        // --- FUN COMMANDS ---
-        if (commandName === 'humeur') {
-            const moods = ["Heureux ! 😊", "Un peu fatigué par le spam... 😴", "Prêt à bannir des gens ! 🔨", "Je me sens riche avec toutes ces factures 💰"];
-            return interaction.reply(moods[Math.floor(Math.random() * moods.length)]);
+        // ABSENCE
+        if (commandName === 'absence') {
+            const absEmb = new EmbedBuilder()
+                .setTitle("📋 Absence Staff Validée")
+                .setColor("#2b2d31")
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: "Membre", value: `${user}`, inline: true },
+                    { name: "Durée", value: options.getString('durée'), inline: true },
+                    { name: "Motif", value: options.getString('raison') }
+                );
+            return interaction.reply({ embeds: [absEmb] });
         }
 
-        if (commandName === 'pile_ou_face') {
-            return interaction.reply(`C'est tombé sur : **${Math.random() > 0.5 ? "PILE" : "FACE"}** !`);
-        }
-
+        // WARN
         if (commandName === 'warn') {
             const target = options.getUser('cible');
-            const reason = options.getString('raison');
-            if (!db.has(target.id)) db.set(target.id, { warnCount: 0, history: [], notes: [] });
-            const data = db.get(target.id);
-            data.warnCount++;
-            data.history.push({ reason, date: new Date().toLocaleString(), mod: user.tag });
-            logToChannel("WARN", target, reason, user);
-            return interaction.reply(`⚠️ ${target} a été averti.`);
+            const raison = options.getString('raison');
+            await applySanction(target, raison, user, guild);
+            return interaction.reply({ content: `⚠️ Sanction appliquée à ${target.tag}.`, ephemeral: true });
         }
+    }
 
-        if (commandName === 'setup') {
-            const sub = options.getSubcommand();
-            if (sub === 'logs') {
-                settings.logChannel = options.getChannel('salon').id;
-                return interaction.reply(`✅ Logs : <#${settings.logChannel}>`);
-            }
+    // --- GESTION DES MODALS ---
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'm_say') {
+            const t = interaction.fields.getTextInputValue('t');
+            const c = interaction.fields.getTextInputValue('c');
+            const i = interaction.fields.getTextInputValue('i');
+            const emb = new EmbedBuilder().setTitle(t).setDescription(c).setColor("#2b2d31");
+            if (i) emb.setImage(i);
+            await interaction.channel.send({ embeds: [emb] });
+            await interaction.reply({ content: "✅ Envoyé !", ephemeral: true });
         }
     }
 
     // --- GESTION DES BOUTONS ---
     if (interaction.isButton()) {
-        const [id, type, targetId, val] = interaction.customId.split('_');
+        const parts = interaction.customId.split('_');
         
-        // Détails Stats (Warns ou Notes)
-        if (id === 'view') {
-            const data = db.get(targetId);
-            const content = type === 'warns' 
-                ? data.history.map(h => `• ${h.reason} (par ${h.mod})`).join('\n')
-                : data.notes.map(n => `• ${n.content} (${n.date})`).join('\n');
-            
-            const emb = new EmbedBuilder().setTitle(`Détails : ${type}`).setDescription(content || "Vide").setColor("#ffaa00");
+        if (parts[0] === 'hist') {
+            const data = db.users[parts[1]];
+            const emb = new EmbedBuilder().setTitle("📜 Historique Détaillé").setColor("#f1c40f")
+                .setDescription(data.history.map((h, i) => `**#${i+1}** [${h.type}] - ${h.reason} *(le ${h.date})*`).join('\n'));
             return interaction.reply({ embeds: [emb], ephemeral: true });
         }
 
-        // Factures
-        if (id === 'fact') {
-            const seller = await client.users.fetch(targetId);
-            if (type === 'ok') {
-                await interaction.update({ content: `✅ Contrat signé !`, embeds: [], components: [] });
-                logToChannel("💰 VENTE IMMO", interaction.user, `A payé **${val}€** à ${seller.tag}`);
-                try { await seller.send(`💰 ${interaction.user.tag} a signé le contrat de **${val}€** !`); } catch(e){}
+        if (parts[0] === 'pay') {
+            const sender = await client.users.fetch(parts[2]);
+            if (parts[1] === 'yes') {
+                await interaction.update({ content: `✅ Vous avez signé pour **${parts[3]}€** !`, embeds: [], components: [] });
+                logAction("💰 PAIEMENT", `${interaction.user.tag} a payé **${parts[3]}€** à ${sender.tag}`);
+                try { await sender.send(`💰 **Paiement reçu !** ${interaction.user.tag} a signé pour ${parts[3]}€.`); } catch(e){}
             } else {
                 await interaction.update({ content: "❌ Offre refusée.", embeds: [], components: [] });
             }
@@ -259,36 +200,60 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
-// --- 6. AUTO-MOD & FUN EVENTS ---
-client.on(Events.MessageCreate, async msg => {
-    if (msg.author.bot) return;
+// --- 5. LOGIQUE DE SANCTION AUTOMATIQUE ---
+async function applySanction(target, reason, moderator, guild) {
+    if (!db.users[target.id]) db.users[target.id] = { warns: 0, bans: 0, mutes: 0, kicks: 0, history: [] };
+    const u = db.users[target.id];
 
-    // Anti-Pub
-    if (msg.content.includes("discord.gg/")) {
-        await msg.delete().catch(() => {});
-        return msg.channel.send(`Pas de pub ici ${msg.author} !`).then(m => setTimeout(() => m.delete(), 3000));
+    u.warns++;
+    u.history.push({ type: "WARN", reason, mod: moderator.tag, date: new Date().toLocaleDateString() });
+
+    // Seuil de Mute
+    if (u.warns === db.config.thresholds.mute) {
+        u.mutes++;
+        const member = guild.members.cache.get(target.id);
+        if (member) await member.timeout(24 * 60 * 60 * 1000, "Seuil de warns atteint").catch(() => {});
+        logAction("🔇 AUTO-MUTE", `${target.tag} a été mute (3 warns).`);
     }
 
-    // easter egg
-    if (msg.content.toLowerCase() === "ça va bot ?") {
-        msg.reply("Tranquille, je regarde les factures passer ! 💸");
+    // Seuil de Kick
+    if (u.warns === db.config.thresholds.kick) {
+        u.kicks++;
+        const member = guild.members.cache.get(target.id);
+        if (member) await member.kick("Seuil de 5 warns atteint").catch(() => {});
+        logAction("👞 AUTO-KICK", `${target.tag} a été kick (5 warns).`);
+    }
+
+    // Seuil de Ban
+    if (u.warns >= db.config.thresholds.ban) {
+        u.bans++;
+        guild.members.ban(target.id, { reason: "Seuil de 10 warns atteint" }).catch(() => {});
+        logAction("🔨 AUTO-BAN", `${target.tag} a été banni définitivement.`);
+    }
+
+    saveDB();
+    logAction("⚠️ WARN", `${target.tag} sanctionné par ${moderator.tag} pour : ${reason}`);
+}
+
+// --- 6. AUTO-MOD (AUTO-WARN) ---
+client.on(Events.MessageCreate, async msg => {
+    if (msg.author.bot || !db.config.autoMod) return;
+    const insultes = ["fdp", "salope", "pute", "connard", "nique"];
+    if (insultes.some(i => msg.content.toLowerCase().includes(i))) {
+        await msg.delete().catch(() => {});
+        await applySanction(msg.author, "Langage inapproprié (Auto-Mod)", client.user, msg.guild);
+        msg.channel.send(`⚠️ ${msg.author}, les insultes sont interdites. **Avertissement automatique ajouté.**`).then(m => setTimeout(() => m.delete(), 5000));
     }
 });
 
-// --- 7. LOGS FUNCTION ---
-async function logToChannel(title, target, reason, mod = "Système") {
-    if (!settings.logChannel) return;
-    const chan = await client.channels.fetch(settings.logChannel).catch(() => null);
-    if (!chan) return;
-
-    const logEmb = new EmbedBuilder()
-        .setTitle(`🛡️ LOG : ${title}`)
-        .addFields(
-            { name: "Utilisateur", value: `${target.tag || target}`, inline: true },
-            { name: "Responsable", value: `${mod.tag || mod}`, inline: true },
-            { name: "Détails", value: reason }
-        ).setTimestamp().setColor("#e74c3c");
-    await chan.send({ embeds: [logEmb] });
+// --- 7. FONCTION LOGS ---
+async function logAction(title, desc) {
+    if (!db.config.logs) return;
+    const chan = await client.channels.fetch(db.config.logs).catch(() => null);
+    if (chan) {
+        const emb = new EmbedBuilder().setTitle(title).setDescription(desc).setColor("#e74c3c").setTimestamp();
+        chan.send({ embeds: [emb] });
+    }
 }
 
 client.login(process.env.TOKEN);
