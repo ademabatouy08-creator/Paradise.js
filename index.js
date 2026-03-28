@@ -257,7 +257,7 @@ async function askMistral(q) {
             },
             {
                 headers: {
-                    Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
+                    Authorization: `Bearer ${process.env.HF_TOKEN}`,
                     "Content-Type": "application/json"
                 },
                 timeout: 15000
