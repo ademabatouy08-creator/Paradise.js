@@ -1,6 +1,7 @@
 const { 
     Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, 
-    ActivityType, Events, REST, Routes, SlashCommandBuilder 
+    ActivityType, Events, REST, Routes, SlashCommandBuilder, 
+    Collection 
 } = require('discord.js');
 
 const client = new Client({
@@ -9,185 +10,234 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildModeration
+        GatewayIntentBits.GuildModeration,
+        GatewayIntentBits.GuildPresences
     ]
 });
 
-// --- VARIABLES DE STOCKAGE (TEMPORAIRE) ---
-let logChannelId = null; 
+// --- BASE DE DONNÉES TEMPORAIRE ---
 const db = new Map(); 
 const messageCache = new Map();
+let logChannelId = null;
 
-// --- CONFIGURATION AUTO-MOD ---
-const CONFIG = {
-    COOLDOWN_SPAM: 3000,
-    LIMIT_SPAM: 5,
-    AUTO_BAN_AGE: 1000 * 60 * 60 * 2, // 2 heures
-};
-
-// --- ENREGISTREMENT DES SLASH COMMANDS ---
+// --- ENREGISTREMENT DES COMMANDES SLASH ---
 const commands = [
+    // Configuration
     new SlashCommandBuilder()
         .setName('setup')
         .setDescription('Configuration du bot')
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('logs')
-                .setDescription('Définit le salon des logs de modération')
-                .addChannelOption(option => 
-                    option.setName('salon').setDescription('Le salon de logs').setRequired(true)
-                )
-        ),
+        .addSubcommand(sub => sub.setName('logs').setDescription('Définit le salon de logs').addChannelOption(opt => opt.setName('salon').setDescription('Le salon').setRequired(true))),
+
+    // Système d'Absence (Ta photo)
     new SlashCommandBuilder()
-        .setName('stats')
-        .setDescription('Affiche l’historique d’un utilisateur')
-        .addUserOption(option => option.setName('cible').setDescription('L’utilisateur à checker')),
+        .setName('absence')
+        .setDescription('Déclarer une absence (Staff)')
+        .addStringOption(opt => opt.setName('raison').setDescription('Raison de l’absence').setRequired(true))
+        .addStringOption(opt => opt.setName('durée').setDescription('Ex: 24h, 3 jours...').setRequired(true)),
+
+    // Modération
     new SlashCommandBuilder()
         .setName('ban')
         .setDescription('Bannir un membre')
-        .addUserOption(option => option.setName('cible').setDescription('Le membre').setRequired(true))
-        .addStringOption(option => option.setName('raison').setDescription('La raison')),
+        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Raison du ban')),
+    
+    new SlashCommandBuilder()
+        .setName('kick')
+        .setDescription('Expulser un membre')
+        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Raison du kick')),
+
+    new SlashCommandBuilder()
+        .setName('mute')
+        .setDescription('Mettre un membre en sourdine (Timeout)')
+        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
+        .addIntegerOption(opt => opt.setName('temps').setDescription('Temps en minutes').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Raison')),
+
     new SlashCommandBuilder()
         .setName('warn')
         .setDescription('Avertir un membre')
-        .addUserOption(option => option.setName('cible').setDescription('Le membre').setRequired(true))
-        .addStringOption(option => option.setName('raison').setDescription('La raison')),
-].map(command => command.toJSON());
+        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Raison')),
 
-// --- ÉVÈNEMENT : DÉMARRAGE ---
+    new SlashCommandBuilder()
+        .setName('clear')
+        .setDescription('Supprimer des messages')
+        .addIntegerOption(opt => opt.setName('nombre').setDescription('Nombre de messages (1-100)').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Voir l’historique d’un utilisateur')
+        .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur')),
+].map(c => c.toJSON());
+
+// --- DÉMARRAGE ---
 client.once(Events.ClientReady, async () => {
-    console.log(`✅ Paradise Bot est en ligne : ${client.user.tag}`);
-    client.user.setActivity("Paradise - /setup", { type: ActivityType.Shield });
+    console.log(`✅ Paradise Bot prêt : ${client.user.tag}`);
+    client.user.setActivity("Paradise - /absence", { type: ActivityType.Watching });
 
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-
     try {
-        console.log('🔄 Actualisation des commandes slash...');
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands },
-        );
-        console.log('✅ Commandes slash enregistrées !');
-    } catch (error) {
-        console.error(error);
-    }
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('✅ Commandes slash synchronisées !');
+    } catch (e) { console.error(e); }
 });
 
-// --- GESTION DES COMMANDES SLASH ---
+// --- GESTION DES INTERACTIONS ---
 client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
+    const { commandName, options, guild, member, user } = interaction;
 
-    const { commandName, options, guild, member } = interaction;
+    // 1. COMMANDE ABSENCE (RÉCAPITULATIF)
+    if (commandName === 'absence') {
+        const raison = options.getString('raison');
+        const duree = options.getString('durée');
+        const roles = member.roles.cache.map(r => r).join(' ');
 
-    // 1. /setup logs
-    if (commandName === 'setup') {
-        if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return interaction.reply({ content: "❌ Tu dois être Admin !", ephemeral: true });
-        }
-        if (options.getSubcommand() === 'logs') {
-            const channel = options.getChannel('salon');
-            logChannelId = channel.id;
-            return interaction.reply(`✅ Le salon de logs a été défini sur ${channel}.`);
-        }
-    }
-
-    // 2. /ban
-    if (commandName === 'ban') {
-        if (!member.permissions.has(PermissionsBitField.Flags.BanMembers)) return interaction.reply("Permission manquante.");
-        const target = options.getUser('cible');
-        const reason = options.getString('raison') || "Aucune raison";
-        
-        await guild.members.ban(target, { reason }).catch(() => {});
-        updateStats(target.id, 'ban');
-        logToChannel("Ban", target, reason, interaction.user);
-        interaction.reply(`🔨 ${target.tag} a été banni.`);
-    }
-
-    // 3. /warn
-    if (commandName === 'warn') {
-        if (!member.permissions.has(PermissionsBitField.Flags.ManageMessages)) return interaction.reply("Permission manquante.");
-        const target = options.getUser('cible');
-        const reason = options.getString('raison') || "Avertissement manuel";
-        
-        updateStats(target.id, 'warn');
-        logToChannel("Warn", target, reason, interaction.user);
-        interaction.reply(`⚠️ ${target.tag} a été averti.`);
-    }
-
-    // 4. /stats
-    if (commandName === 'stats') {
-        const target = options.getUser('cible') || interaction.user;
-        const s = db.get(target.id) || { warns: 0, bans: 0 };
         const embed = new EmbedBuilder()
-            .setTitle(`Historique : ${target.username}`)
+            .setTitle("Récapitulatif d'absence - Validée")
+            .setColor("#2b2d31")
+            .addFields(
+                { name: "Utilisateur", value: `${user}`, inline: false },
+                { name: "Raison", value: raison, inline: false },
+                { name: "Durée", value: duree, inline: true },
+                { name: "Rôles possédés", value: roles || "Aucun", inline: false },
+                { name: "Traité par", value: `${client.user}`, inline: true },
+                { name: "Date de traitement", value: new Date().toLocaleString('fr-FR'), inline: true }
+            )
+            .setFooter({ text: "Système de gestion des absences Paradise" });
+
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // 2. SETUP LOGS
+    if (commandName === 'setup') {
+        if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "Admin uniquement.", ephemeral: true });
+        logChannelId = options.getChannel('salon').id;
+        return interaction.reply(`✅ Logs configurés dans <#${logChannelId}>`);
+    }
+
+    // 3. MODÉRATION (BAN, KICK, WARN, MUTE)
+    if (['ban', 'kick', 'warn', 'mute'].includes(commandName)) {
+        const target = options.getMember('cible');
+        const reason = options.getString('raison') || "Aucune raison fournie";
+        if (!target) return interaction.reply("Membre introuvable.");
+
+        if (commandName === 'ban') {
+            if (!member.permissions.has(PermissionsBitField.Flags.BanMembers)) return interaction.reply("Pas de permission.");
+            await target.ban({ reason });
+            updateDB(target.id, 'ban');
+        } else if (commandName === 'kick') {
+            if (!member.permissions.has(PermissionsBitField.Flags.KickMembers)) return interaction.reply("Pas de permission.");
+            await target.kick(reason);
+            updateDB(target.id, 'kick');
+        } else if (commandName === 'mute') {
+            const temps = options.getInteger('temps');
+            await target.timeout(temps * 60000, reason);
+            updateDB(target.id, 'mute');
+        } else if (commandName === 'warn') {
+            updateDB(target.id, 'warn');
+        }
+
+        logToChannel(commandName.toUpperCase(), target.user, reason, user);
+        return interaction.reply(`✅ Action **${commandName}** effectuée sur ${target.user.tag}`);
+    }
+
+    // 4. CLEAR
+    if (commandName === 'clear') {
+        const amount = options.getInteger('nombre');
+        await interaction.channel.bulkDelete(amount, true);
+        return interaction.reply({ content: `✅ ${amount} messages supprimés.`, ephemeral: true });
+    }
+
+    // 5. STATS
+    if (commandName === 'stats') {
+        const target = options.getUser('cible') || user;
+        const s = db.get(target.id) || { warn: 0, ban: 0, kick: 0, mute: 0 };
+        const embed = new EmbedBuilder()
+            .setTitle(`Historique : ${target.tag}`)
             .setColor("#5865F2")
             .addFields(
-                { name: "⚠️ Warns", value: `${s.warns}`, inline: true },
-                { name: "🔨 Bans", value: `${s.bans}`, inline: true }
+                { name: "⚠️ Warns", value: `${s.warn}`, inline: true },
+                { name: "🔨 Bans", value: `${s.ban}`, inline: true },
+                { name: "👢 Kicks", value: `${s.kick}`, inline: true },
+                { name: "🔇 Mutes", value: `${s.mute}`, inline: true }
             );
-        interaction.reply({ embeds: [embed] });
+        return interaction.reply({ embeds: [embed] });
     }
 });
 
-// --- AUTO-MODÉRATION (ANTI-PUB & SPAM) ---
-client.on(Events.MessageCreate, async message => {
-    if (message.author.bot || !message.guild) return;
+// --- AUTO-MODÉRATION (ANTI-PUB & NOUVEAUX COMPTES) ---
+client.on(Events.GuildMemberAdd, async member => {
+    const age = Date.now() - member.user.createdTimestamp;
+    const isNew = age < 1000 * 60 * 60 * 24; // 24h
+
+    if (logChannelId) {
+        const chan = client.channels.cache.get(logChannelId);
+        const embed = new EmbedBuilder()
+            .setTitle("Anti-Pub / Sécurité")
+            .setThumbnail(member.user.displayAvatarURL())
+            .setColor(isNew ? "#ff0000" : "#00ff00")
+            .setDescription(`${member} a rejoint le serveur.`)
+            .addFields(
+                { name: "Création", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+                { name: "Plateforme", value: member.presence?.clientStatus ? Object.keys(member.presence.clientStatus).join(', ') : "Web/Inconnu", inline: true },
+                { name: "Attention", value: isNew ? "⚠️ Compte récent (Profil suspect)" : "✅ Compte ancien" }
+            );
+        chan.send({ embeds: [embed] });
+    }
+});
+
+client.on(Events.MessageCreate, async msg => {
+    if (msg.author.bot || !msg.guild) return;
 
     // Anti-Pub
-    const inviteLinks = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/.+/g;
-    if (inviteLinks.test(message.content)) {
-        await message.delete().catch(() => {});
-        logToChannel("Auto-Mod", message.author, "Lien publicitaire détecté");
+    if (/(discord\.(gg|io|me|li)|discordapp\.com\/invite)/.test(msg.content)) {
+        await msg.delete().catch(() => {});
+        msg.channel.send(`${msg.author}, les pubs sont interdites !`).then(m => setTimeout(() => m.delete(), 5000));
+        logToChannel("AUTO-MOD (PUB)", msg.author, "Tentative de lien d'invitation");
     }
 
     // Anti-Spam
-    const authorId = message.author.id;
+    const uid = msg.author.id;
     const now = Date.now();
-    if (!messageCache.has(authorId)) {
-        messageCache.set(authorId, { count: 1, lastTime: now });
-    } else {
-        const data = messageCache.get(authorId);
-        if (now - data.lastTime < CONFIG.COOLDOWN_SPAM) {
+    if (!messageCache.has(uid)) messageCache.set(uid, { count: 1, last: now });
+    else {
+        const data = messageCache.get(uid);
+        if (now - data.last < 3000) {
             data.count++;
-            if (data.count === CONFIG.LIMIT_SPAM) {
-                await message.member.timeout(600000, "Spamming").catch(() => {});
-                logToChannel("Auto-Mute", message.author, "Spam excessif (10 min)");
+            if (data.count >= 5) {
+                await msg.member.timeout(600000, "Spam automatique");
+                logToChannel("AUTO-MUTE", msg.author, "Spam détecté");
             }
-        } else {
-            data.count = 1;
-            data.lastTime = now;
-        }
+        } else { data.count = 1; data.last = now; }
     }
 });
 
-// --- FONCTIONS UTILITAIRES ---
-function updateStats(userId, type) {
-    if (!db.has(userId)) db.set(userId, { warns: 0, bans: 0 });
-    const s = db.get(userId);
-    if (type === 'warn') s.warns++;
-    if (type === 'ban') s.bans++;
+// --- FONCTIONS SYSTÈME ---
+function updateDB(uid, type) {
+    if (!db.has(uid)) db.set(uid, { warn: 0, ban: 0, kick: 0, mute: 0 });
+    db.get(uid)[type]++;
 }
 
-async function logToChannel(action, target, reason, mod = "Système Paradise") {
+async function logToChannel(action, target, reason, mod = "Système Automatique") {
     if (!logChannelId) return;
-    const channel = client.channels.cache.get(logChannelId);
-    if (!channel) return;
+    const chan = client.channels.cache.get(logChannelId);
+    if (!chan) return;
 
-    const s = db.get(target.id) || { warns: 0, bans: 0 };
+    const s = db.get(target.id) || { warn: 0, ban: 0, kick: 0, mute: 0 };
     const embed = new EmbedBuilder()
-        .setTitle(`Récapitulatif - ${action}`)
-        .setColor(action.includes("Ban") ? "#ff0000" : "#5865f2")
-        .setThumbnail(target.displayAvatarURL?.() || null)
+        .setTitle(`Log : ${action}`)
+        .setColor(action.includes("BAN") ? "#ff0000" : "#5865f2")
         .addFields(
-            { name: "Utilisateur", value: `${target.tag}`, inline: true },
-            { name: "Modérateur", value: `${mod.username || mod}`, inline: true },
+            { name: "Cible", value: `${target.tag} (${target.id})`, inline: true },
+            { name: "Modérateur", value: `${mod.tag || mod}`, inline: true },
             { name: "Raison", value: reason },
-            { name: "Historique", value: `⚠️ ${s.warns} Warns | 🔨 ${s.bans} Bans` }
+            { name: "Historique", value: `⚠️ ${s.warn} Warns | 🔨 ${s.ban} Bans | 🔇 ${s.mute} Mutes` }
         )
         .setTimestamp();
-
-    channel.send({ embeds: [embed] });
+    chan.send({ embeds: [embed] });
 }
 
-process.on('unhandledRejection', error => console.error(error));
 client.login(process.env.TOKEN);
