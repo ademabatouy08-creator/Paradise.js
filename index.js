@@ -23,7 +23,7 @@ let db = {
         logs: null, welcome: null, bl_chan: null, wl_cat: null,
         staff_role: null, ticket_cat: null, muted_role: null,
         automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 },
-        ai_identity: "Tu es Paradise Overlord, l'intelligence supérieure du serveur. Tu es froid, autoritaire et ultra-précis.",
+        ai_identity: "tu est la personne cree par 67 tu est cool tranquille tu repond en 2 3 phrase tu reflechi pas trop juste tu donne lesreponse tu a plusieur mode si quekqun te dis /froid tu devien froid et tu devien superieur a lui par contre si sa te dis /coach tu devien un coach pour encourager tt le monde si qualqun dis /soumis tu devien soumis et drole tu est soumis mais tu fais des blague",
         xp_roles: {},   // { level: roleId }
         shop: {},       // { itemName: { price, roleId, description } }
         gifs: {
