@@ -1,20 +1,18 @@
 {
-  "name": "paradise-overlord-v17",
+  "name": "paradise-overlord-v19",
   "version": "1.0.0",
-  "description": "Système de sécurité Overlord avec Modération Radicale et Factures Pro",
+  "description": "Bot Discord multitâche avec IA, modération, économie, etc.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "axios": "^1.6.7",
-    "fs": "0.0.1-security",
-    "http": "0.0.1-security"
+    "discord.js": "^14.13.0",
+    "axios": "^1.4.0",
+    "dotenv": "^16.3.1"
   },
   "engines": {
-    "node": ">=18.x"
-  },
-  "author": "Paradise Dev",
-  "license": "ISC"
+    "node": "18.x"
+  }
 }
