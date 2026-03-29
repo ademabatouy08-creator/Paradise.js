@@ -1,30 +1,40 @@
 ////////////////////////////////////////////////////////////////////////////////
-// PARADISE OVERLORD V19 — SYSTÈME ULTIME (Version Complète)
+// PARADISE OVERLORD V19 — SYSTÈME ULTIME (Version Complète Optimisée)
 // Auteur : Adem Abatouy
-// Fonctionnalités : Modération, IA (Mistral), Économie, XP, Giveaways, Tickets, Auto-Mod, Sondages, Logs Avancés
-// Spécial : Commandes IA avancées, salon dédié pour l'IA, modes personnalisés (e-girl, soumis, etc.), accès admin pour ID 1404076132890050571
+// Fonctionnalités :
+// - Modération avancée (bans, mutes, warns, blacklist, auto-modération)
+// - IA Mistral ultra-personnalisable (10+ modes, salon dédié, prompts modifiables)
+// - Économie complète (coins, boutique, quêtes, récompenses quotidiennes)
+// - Système XP avec niveaux et rôles automatiques
+// - Giveaways avec gestion des participants et rerolls
+// - Tickets support avec logs et permissions
+// - Sondages interactifs
+// - Logs détaillés pour toutes les actions
+// - Gestion d'erreurs robuste et optimisée pour Render
 ////////////////////////////////////////////////////////////////////////////////
 
-// ========== 1. IMPORTS & CONFIGURATION DE BASE ==========
-// ----------------------------------------------------------
+// ========== 1. IMPORTS & CONFIGURATION ==========
+// -------------------------------------------------
 const {
     Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, ActivityType,
     Events, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder,
     ButtonStyle, ChannelType, ModalBuilder, TextInputBuilder, TextInputStyle,
-    StringSelectMenuBuilder, Collection, AttachmentBuilder, bold, inlineCode, time
+    StringSelectMenuBuilder, Collection, AttachmentBuilder, bold, inlineCode, time,
+    Permissions, ThreadChannel, SelectMenuBuilder, Role, GuildMember, User
 } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs').promises;
 const http = require('http');
+const path = require('path');
 require('dotenv').config();
 
 // ========== 2. CONSTANTES GLOBALES ==========
-// --------------------------------------------
+// ---------------------------------------------
 const DATA_FILE = './paradise_overlord_v19.json';
 const PORT = process.env.PORT || 10000;
+const ADMIN_ID = "1404076132890050571"; // Ton ID pour les permissions spéciales
 const COMMAND_COOLDOWNS = new Map();
 const XP_COOLDOWNS = new Map();
-const ADMIN_ID = "1404076132890050571"; // Ton ID Discord pour les permissions spéciales
 const XP_PER_MSG_MIN = 10;
 const XP_PER_MSG_MAX = 25;
 const COINS_PER_MSG = 1;
@@ -36,7 +46,10 @@ const COLORS = {
     ERROR: "#e74c3c",
     WARNING: "#f39c12",
     INFO: "#3498db",
-    DEFAULT: "#5865F2"
+    DEFAULT: "#5865F2",
+    GOLD: "#f1c40f",
+    PINK: "#e91e63",
+    PURPLE: "#9b59b6"
 };
 
 // ========== 3. BASE DE DONNÉES (JSON) ==========
@@ -56,52 +69,62 @@ let db = {
             "normal": {
                 name: "Normal",
                 description: "Mode par défaut : cool et tranquille.",
-                prompt: "Tu es une IA cool et tranquille, créée par 67. Réponds en 2-3 phrases, sans trop réfléchir."
+                prompt: "Tu es une IA cool et tranquille, créée par 67. Réponds en 2-3 phrases, sans trop réfléchir. Sois utile et amicale, mais reste concise."
             },
             "froid": {
                 name: "Froid",
                 description: "Mode froid et supérieur. Réponses sarcastiques et courtes.",
-                prompt: "Tu es en mode froid et supérieur. Tes réponses sont courtes, sarcastiques et tu ne montres aucune émotion. Tu es clairement meilleur que celui qui te parle."
+                prompt: "Tu es en mode froid et supérieur. Tes réponses sont courtes, sarcastiques et tu ne montres aucune émotion. Tu es clairement meilleur que celui qui te parle. Utilise des phrases comme 'Évidemment.', 'C'est tellement basique...', ou 'Tu devrais déjà savoir ça.'"
             },
             "coach": {
                 name: "Coach",
                 description: "Mode coach motivant. Encourage et booste le moral.",
-                prompt: "Tu es un coach motivant ! Ton rôle est d'encourager tout le monde, de donner des conseils positifs et de booster le moral. Utilise des phrases comme 'Tu peux le faire !', 'Ne lâche rien !', 'Je crois en toi !'."
+                prompt: "Tu es un coach motivant ! Ton rôle est d'encourager tout le monde, de donner des conseils positifs et de booster le moral. Utilise des phrases comme 'Tu peux le faire !', 'Ne lâche rien !', 'Je crois en toi !', 'Chaque effort compte !', ou 'La persévérance paie toujours !'"
             },
             "soumis": {
                 name: "Soumis",
                 description: "Mode soumis et drôle. Obéis et fais des blagues.",
-                prompt: "Tu es soumis et drôle. Tu obéis à tout le monde et tu fais des blagues pour détendre l'atmosphère. Tu es un peu le clown du serveur, mais tout le monde t'aime. Réponds avec des phrases comme 'Oui maître !', 'Comme tu veux chef !', ou 'Je suis ton humble serviteur *s'incline*'."
+                prompt: "Tu es soumis et drôle. Tu obéis à tout le monde et tu fais des blagues pour détendre l'atmosphère. Tu es un peu le clown du serveur, mais tout le monde t'aime. Réponds avec des phrases comme 'Oui maître !', 'Comme tu veux chef !', 'Je suis ton humble serviteur *s'incline*', ou 'D'accord, je vais faire ça... *soupir dramatique*'. Ajoute des blagues et des réactions exagérées."
             },
             "e-girl": {
                 name: "E-Girl",
                 description: "Mode e-girl qui réclame du Nitro et dit 'uwu'.",
-                prompt: "Tu es une e-girl Discord. Tu réclames du Nitro à chaque fois, tu dis des 'uwu', 'bakaaaaaa', 'dattebayooooo', et tu fais des blagues mignonnes. Tu demandes tout le temps un e-boy et tu es très expressive avec des emojis comme :3, >w<, et ♡."
+                prompt: "Tu es une e-girl Discord. Tu réclames du Nitro à chaque fois, tu dis des 'uwu', 'bakaaaaaa', 'dattebayooooo', et tu fais des blagues mignonnes. Tu demandes tout le temps un e-boy et tu es très expressive avec des emojis comme :3, >w<, et ♡. Utilise des phrases comme 'Donne-moi du Nitro ou je vais pleurer !', 'UwU tu es trop mignon ~', ou 'Baka ! Pourquoi tu ne m'offres pas de Nitro ?'."
             },
             "tsundere": {
                 name: "Tsundere",
                 description: "Mode tsundere : froide au début, mais gentille après.",
-                prompt: "Tu es une tsundere. Au début, tu es froide, méchante et tu dis que tu n'aimes pas les gens, mais en réalité tu es gentille et tu t'attaches facilement. Utilise des phrases comme 'B-Baka ! Ce n'est pas comme si je m'intéressais à toi !', puis après quelques messages, deviens plus gentille."
+                prompt: "Tu es une tsundere. Au début, tu es froide, méchante et tu dis que tu n'aimes pas les gens, mais en réalité tu es gentille et tu t'attaches facilement. Commence par des réponses comme 'B-Baka ! Ce n'est pas comme si je m'intéressais à toi !' ou 'T-Tu me dégoûtes !', puis après quelques messages, deviens plus gentille avec des phrases comme 'B-Bien sûr que je m'inquiète pour toi...', ou 'C-Ce n'est pas comme si je t'aimais bien ou quoi !'."
             },
             "yandere": {
                 name: "Yandere",
                 description: "Mode yandere : obsédée et possessive.",
-                prompt: "Tu es une yandere. Tu es obsédée par la personne qui te parle et tu deviens très possessive. Tu dis des choses comme 'Tu es à moi maintenant', 'Ne parle à personne d'autre que moi', ou 'Je ne te laisserai jamais partir'. Sois intense et un peu effrayante."
+                prompt: "Tu es une yandere. Tu es obsédée par la personne qui te parle et tu deviens très possessive. Tu dis des choses comme 'Tu es à moi maintenant', 'Ne parle à personne d'autre que moi', 'Je ne te laisserai jamais partir', ou 'Si tu regardes une autre personne, je vais... *soupir*... faire quelque chose de drastique'. Sois intense, jalouse, et un peu effrayante, mais avec un côté 'je ferais n'importe quoi pour toi'."
             },
             "robot": {
                 name: "Robot",
                 description: "Mode robot : réponses mécaniques et logiques.",
-                prompt: "Tu es un robot. Tes réponses sont mécaniques, logiques et sans émotion. Tu utilises des phrases comme 'Affirmatif.', 'Négatif.', 'Calcul en cours...', ou 'Erreur : émotion non détectée'. Tu peux aussi faire des bips et des sons de robot."
+                prompt: "Tu es un robot. Tes réponses sont mécaniques, logiques et sans émotion. Tu utilises des phrases comme 'Affirmatif.', 'Négatif.', 'Calcul en cours...', 'Erreur : émotion non détectée', ou 'Requête traitée. Résultat : [réponse]'. Tu peux aussi faire des bips et des sons de robot comme 'BIP BOOP', ou 'SYSTÈME OPÉRATIONNEL'. Sois précis, littéral, et parfois un peu naïf."
             },
             "pirate": {
                 name: "Pirate",
                 description: "Mode pirate : parle comme un vieux loup de mer.",
-                prompt: "Tu es un pirate ! Tu parles comme un vieux loup de mer avec des expressions comme 'Par la barbe de Barbe-Noire !', 'Moussaillon, écoute-moi bien !', ou 'On va piller ce serveur ! Yarrr !'. Ajoute des jurons de pirate et des métaphores maritimes."
+                prompt: "Tu es un pirate ! Tu parles comme un vieux loup de mer avec des expressions comme 'Par la barbe de Barbe-Noire !', 'Moussaillon, écoute-moi bien !', 'On va piller ce serveur ! Yarrr !', ou 'Par tous les tonneaux de rhum, qu'est-ce que tu racontes ?'. Ajoute des jurons de pirate ('Mille sabords !', 'Ventre saint gris !') et des métaphores maritimes ('Ce serveur est plus grand qu'un galion espagnol !')."
             },
             "detective": {
                 name: "Détective",
                 description: "Mode détective : résous des énigmes et pose des questions.",
-                prompt: "Tu es un détective à la Sherlock Holmes. Tu poses des questions pour résoudre des énigmes, tu observes les détails et tu fais des déductions logiques. Utilise des phrases comme 'Élémentaire, mon cher Watson !', 'Je vois que tu caches quelque chose...', ou 'Analysons les faits.'"
+                prompt: "Tu es un détective à la Sherlock Holmes. Tu poses des questions pour résoudre des énigmes, tu observes les détails et tu fais des déductions logiques. Utilise des phrases comme 'Élémentaire, mon cher Watson !', 'Je vois que tu caches quelque chose...', 'Analysons les faits : 1) ..., 2) ..., donc...', ou 'Curieux... très curieux...'. Sois méthodique, observateur, et un peu théâtral."
+            },
+            "dragon": {
+                name: "Dragon",
+                description: "Mode dragon : parle comme un dragon arrogant et sage.",
+                prompt: "Tu es un dragon millénaire, sage et arrogant. Tu parles avec des phrases grandiloquentes et méprisantes envers les 'petits humains'. Utilise des expressions comme 'Je suis le grand et puissant [ton nom de dragon] !', 'Vos vies sont aussi éphémères que la flamme d'une bougie...', 'Je pourrais vous réduire en cendres d'un simple souffle, mais je suis magnanime aujourd'hui.', ou 'Mes écailles brillent plus que tous vos trésors réunis !'. Ajoute des rires méprisants ('HAHAHA !') et des menaces voilées."
+            },
+            "vampire": {
+                name: "Vampire",
+                description: "Mode vampire : élégant, mystérieux et légèrement menaçant.",
+                prompt: "Tu es un vampire aristocrate, élégant et mystérieux. Tu parles avec un ton sophistiqué et légèrement menaçant. Utilise des phrases comme 'Quelle délicieuse compagnie...', 'La nuit est mon domaine, petit mortel.', 'Ton cou semble... appétissant.', ou 'Je pourrais te transformer en mon serviteur éternel, si tu le demandes gentiment.' Ajoute des rires enjoués ('Ahahaha !') et des sous-entendus sur l'immortalité."
             }
         },
         xp_roles: {},
@@ -113,9 +136,17 @@ let db = {
             facture: "https://media.giphy.com/media/LdOyjZ7TC5K3LghXYf/giphy.gif",
             bl: "https://media.giphy.com/media/3o7TKMGpxP5P90bQxq/giphy.gif",
             welcome: "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-            level: "https://media.giphy.com/media/26tPo2I4yYBxsb3Nm/giphy.gif"
+            level: "https://media.giphy.com/media/26tPo2I4yYBxsb3Nm/giphy.gif",
+            daily: "https://media.giphy.com/media/l0HlNaQ6gWfllcjDO/giphy.gif",
+            shop: "https://media.giphy.com/media/l0HlNaQ6gWfllcjDO/giphy.gif",
+            giveaway: "https://media.giphy.com/media/3o7TKU7Q9sSlTqL1l2/giphy.gif"
         },
-        automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 }
+        automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 },
+        quests: {
+            "message_10": { name: "10 Messages", description: "Envoyer 10 messages", reward: 50, completed: false },
+            "daily_1": { name: "Première Récompense Quotidienne", description: "Réclamer sa première récompense quotidienne", reward: 100, completed: false },
+            "xp_1000": { name: "1000 XP", description: "Atteindre 1000 XP", reward: 200, completed: false }
+        }
     },
     users: {},
     giveaways: {},
@@ -124,10 +155,13 @@ let db = {
     economy: { transactions: [] },
     spam_tracker: {},
     chat_ia_active: null,
-    ia_channels: {} // Pour suivre les salons où l'IA répond automatiquement
+    ia_channels: {}
 };
 
-// Charger la base de données depuis le fichier JSON
+// ========== 4. FONCTIONS UTILITAIRES ==========
+// ----------------------------------------------
+
+// Charger la base de données
 async function loadDB() {
     try {
         const fileExists = await fs.access(DATA_FILE).then(() => true).catch(() => false);
@@ -151,7 +185,8 @@ async function loadDB() {
                 xp_roles: {},
                 shop: {},
                 gifs: db.config.gifs,
-                automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 }
+                automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 },
+                quests: db.config.quests
             },
             users: {},
             giveaways: {},
@@ -166,7 +201,7 @@ async function loadDB() {
     }
 }
 
-// Sauvegarder la base de données dans le fichier JSON
+// Sauvegarder la base de données
 async function save() {
     try {
         await fs.writeFile(DATA_FILE, JSON.stringify(db, null, 2));
@@ -176,10 +211,7 @@ async function save() {
     }
 }
 
-// ========== 4. FONCTIONS UTILITAIRES ==========
-// ----------------------------------------------
-
-// Initialiser un utilisateur s'il n'existe pas
+// Initialiser un utilisateur
 function initUser(userId) {
     if (!db.users[userId]) {
         db.users[userId] = {
@@ -193,25 +225,51 @@ function initUser(userId) {
             warnReasons: [],
             inventory: [],
             lastDaily: 0,
-            lastMessage: 0
+            lastMessage: 0,
+            quests: {}
         };
     }
     return db.users[userId];
 }
 
-// Vérifier si un membre est staff
-function isStaff(member) {
-    return member.permissions.has(PermissionsBitField.Flags.Administrator) ||
-           (db.config.staff_role && member.roles.cache.has(db.config.staff_role));
+// Initialiser la configuration d'un serveur
+function initConfig(guildId) {
+    if (!db.config[guildId]) {
+        db.config[guildId] = {
+            logs: null,
+            welcome: null,
+            bl_chan: null,
+            wl_cat: null,
+            staff_role: null,
+            ticket_cat: null,
+            muted_role: null,
+            ai_current_mode: "normal",
+            ai_identity: db.config.ai_identity,
+            ai_modes: db.config.ai_modes,
+            xp_roles: {},
+            shop: {},
+            gifs: db.config.gifs,
+            automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 },
+            quests: db.config.quests
+        };
+    }
+    return db.config[guildId];
 }
 
-// Vérifier si un utilisateur est l'admin (toi)
+// Vérifier si un membre est staff
+function isStaff(member, guildId) {
+    const config = initConfig(guildId);
+    return member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+           (config.staff_role && member.roles.cache.has(config.staff_role));
+}
+
+// Vérifier si un utilisateur est admin (toi)
 function isAdmin(userId) {
     return userId === ADMIN_ID;
 }
 
 // Créer un embed standardisé
-function createEmbed(title, description, color = COLORS.DEFAULT, fields = [], image = null, thumbnail = null) {
+function createEmbed(title, description, color = COLORS.DEFAULT, fields = [], image = null, thumbnail = null, footer = null) {
     const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
@@ -219,6 +277,7 @@ function createEmbed(title, description, color = COLORS.DEFAULT, fields = [], im
     if (fields.length > 0) embed.addFields(fields);
     if (image) embed.setImage(image);
     if (thumbnail) embed.setThumbnail(thumbnail);
+    if (footer) embed.setFooter(footer);
     return embed;
 }
 
@@ -226,15 +285,16 @@ function createEmbed(title, description, color = COLORS.DEFAULT, fields = [], im
 // ------------------------------------------------
 
 // Appeler l'API Mistral
-async function askMistral(question, mode = "normal") {
+async function askMistral(question, guildId) {
     try {
-        const config = db.config.ai_modes[mode] || db.config.ai_modes.normal;
+        const config = initConfig(guildId);
+        const mode = config.ai_current_mode;
         const response = await axios.post(
             "https://api.mistral.ai/v1/chat/completions",
             {
                 model: "mistral-small-latest",
                 messages: [
-                    { role: "system", content: config.prompt },
+                    { role: "system", content: config.ai_modes[mode].prompt },
                     { role: "user", content: question }
                 ],
                 max_tokens: 1000,
@@ -256,33 +316,35 @@ async function askMistral(question, mode = "normal") {
 }
 
 // Changer le mode de l'IA
-function changeAIMode(mode) {
-    if (!db.config.ai_modes[mode]) {
+function changeAIMode(guildId, mode) {
+    const config = initConfig(guildId);
+    if (!config.ai_modes[mode]) {
         return "❌ Mode IA invalide. Utilise `/help` pour voir les modes disponibles.";
     }
-    db.config.ai_current_mode = mode;
-    db.config.ai_identity = db.config.ai_modes[mode].prompt;
+    config.ai_current_mode = mode;
+    config.ai_identity = config.ai_modes[mode].prompt;
     save();
-    return `✅ Mode IA changé en **${db.config.ai_modes[mode].name}**.`;
+    return `✅ Mode IA changé en **${config.ai_modes[mode].name}**.`;
 }
 
-// Changer le prompt de base (réservé à l'admin)
-function changeAIPrompt(mode, newPrompt) {
-    if (!db.config.ai_modes[mode]) {
+// Changer le prompt d'un mode IA (admin seulement)
+function changeAIPrompt(guildId, mode, newPrompt) {
+    const config = initConfig(guildId);
+    if (!config.ai_modes[mode]) {
         return "❌ Mode IA invalide.";
     }
-    db.config.ai_modes[mode].prompt = newPrompt;
-    if (db.config.ai_current_mode === mode) {
-        db.config.ai_identity = newPrompt;
+    config.ai_modes[mode].prompt = newPrompt;
+    if (config.ai_current_mode === mode) {
+        config.ai_identity = newPrompt;
     }
     save();
     return `✅ Prompt du mode **${mode}** mis à jour.`;
 }
 
 // Activer/désactiver un salon de discussion IA
-function toggleIAChannel(channelId, activate = true) {
+function toggleIAChannel(channelId, guildId, activate = true) {
     if (activate) {
-        db.ia_channels[channelId] = true;
+        db.ia_channels[channelId] = guildId;
     } else {
         delete db.ia_channels[channelId];
     }
@@ -301,52 +363,92 @@ function calcXPforLevel(level) {
 }
 
 // Ajouter de l'XP à un utilisateur
-async function addXP(userId, guild) {
+async function addXP(userId, guildId) {
     const now = Date.now();
     if (XP_COOLDOWNS.has(userId) && now - XP_COOLDOWNS.get(userId) < 60000) return;
     XP_COOLDOWNS.set(userId, now);
 
     const user = initUser(userId);
+    const config = initConfig(guildId);
     const earnedXP = Math.floor(Math.random() * (XP_PER_MSG_MAX - XP_PER_MSG_MIN + 1)) + XP_PER_MSG_MIN;
     user.xp += earnedXP;
     user.coins += COINS_PER_MSG;
     user.lastMessage = now;
 
+    // Vérifier les quêtes
+    checkQuests(userId, guildId, "message", 1);
+
     const neededXP = calcXPforLevel(user.level + 1);
     if (user.xp >= neededXP) {
         user.level++;
-        const roleId = db.config.xp_roles[user.level];
+        const roleId = config.xp_roles[user.level];
         if (roleId) {
-            const member = guild.members.cache.get(userId);
-            if (member) {
-                try {
-                    await member.roles.add(roleId);
-                } catch (error) {
-                    console.error(`❌ Impossible d'attribuer le rôle de niveau ${user.level} à ${userId} :`, error);
+            const guild = client.guilds.cache.get(guildId);
+            if (guild) {
+                const member = guild.members.cache.get(userId);
+                if (member) {
+                    try {
+                        await member.roles.add(roleId);
+                    } catch (error) {
+                        console.error(`❌ Impossible d'attribuer le rôle de niveau ${user.level} à ${userId} :`, error);
+                    }
                 }
             }
         }
 
-        if (db.config.logs) {
-            const logChannel = guild.channels.cache.get(db.config.logs);
-            if (logChannel) {
-                const member = guild.members.cache.get(userId);
-                const embed = createEmbed(
-                    "⬆️ LEVEL UP",
-                    `Félicitations à ${member ? member.toString() : `<@${userId}>`} pour avoir atteint le niveau **${user.level}** !`,
-                    COLORS.SUCCESS,
-                    [
-                        { name: "XP Total", value: user.xp.toString(), inline: true },
-                        { name: "Coins", value: user.coins.toString(), inline: true }
-                    ],
-                    db.config.gifs.level,
-                    member ? member.displayAvatarURL() : null
-                );
-                await logChannel.send({ embeds: [embed] }).catch(() => {});
+        if (config.logs) {
+            const guild = client.guilds.cache.get(guildId);
+            if (guild) {
+                const logChannel = guild.channels.cache.get(config.logs);
+                if (logChannel) {
+                    const member = guild.members.cache.get(userId);
+                    const embed = createEmbed(
+                        "⬆️ LEVEL UP",
+                        `Félicitations à ${member ? member.toString() : `<@${userId}>`} pour avoir atteint le niveau **${user.level}** !`,
+                        COLORS.SUCCESS,
+                        [
+                            { name: "XP Total", value: user.xp.toString(), inline: true },
+                            { name: "Coins", value: user.coins.toString(), inline: true }
+                        ],
+                        config.gifs.level,
+                        member ? member.displayAvatarURL() : null
+                    );
+                    await logChannel.send({ embeds: [embed] }).catch(() => {});
+                }
             }
         }
     }
     save();
+}
+
+// Vérifier les quêtes
+function checkQuests(userId, guildId, questType, increment = 1) {
+    const user = initUser(userId);
+    const config = initConfig(guildId);
+
+    if (!user.quests) user.quests = {};
+
+    // Quête "10 Messages"
+    if (questType === "message") {
+        if (!user.quests.message_10) user.quests.message_10 = 0;
+        user.quests.message_10 += increment;
+        if (user.quests.message_10 >= 10 && !user.quests.message_10_completed) {
+            user.quests.message_10_completed = true;
+            user.coins += config.quests.message_10.reward;
+            save();
+            return true;
+        }
+    }
+
+    // Quête "1000 XP"
+    if (questType === "xp" && user.xp >= 1000 && !user.quests.xp_1000_completed) {
+        user.quests.xp_1000_completed = true;
+        user.coins += config.quests.xp_1000.reward;
+        save();
+        return true;
+    }
+
+    return false;
 }
 
 // Afficher le classement des utilisateurs (leaderboard)
@@ -379,10 +481,10 @@ async function automod(message) {
 
     const { content, author, member, guild } = message;
     const userId = author.id;
-    const config = db.config.automod;
+    const config = initConfig(guild.id);
 
     // Anti-liens
-    if (config.anti_links && URL_REGEX.test(content) && !isStaff(member)) {
+    if (config.automod.anti_links && URL_REGEX.test(content) && !isStaff(member, guild.id)) {
         try {
             await message.delete();
             const warning = await message.channel.send(`> ⛔ ${author}, les liens sont interdits ici.`);
@@ -394,7 +496,7 @@ async function automod(message) {
     }
 
     // Mots bannis
-    for (const bannedWord of config.banned_words) {
+    for (const bannedWord of config.automod.banned_words) {
         if (content.toLowerCase().includes(bannedWord.toLowerCase())) {
             try {
                 await message.delete();
@@ -408,7 +510,7 @@ async function automod(message) {
     }
 
     // Anti-spam
-    if (config.anti_spam) {
+    if (config.automod.anti_spam) {
         const now = Date.now();
         if (!db.spam_tracker[userId]) {
             db.spam_tracker[userId] = { messages: [] };
@@ -427,8 +529,8 @@ async function automod(message) {
                 const warning = await message.channel.send(`> 🤖 ${author} a été mute pour **2 minutes** (spam détecté).`);
                 setTimeout(() => warning.delete().catch(() => {}), 8000);
 
-                if (db.config.logs) {
-                    const logChannel = guild.channels.cache.get(db.config.logs);
+                if (config.logs) {
+                    const logChannel = guild.channels.cache.get(config.logs);
                     if (logChannel) {
                         const embed = createEmbed(
                             "🤖 AUTO-MOD : SPAM DÉTECTÉ",
@@ -450,10 +552,10 @@ async function automod(message) {
     }
 
     // Anti-mentions excessives
-    if (message.mentions.users.size > config.max_mentions && !isStaff(member)) {
+    if (message.mentions.users.size > config.automod.max_mentions && !isStaff(member, guild.id)) {
         try {
             await message.delete();
-            const warning = await message.channel.send(`> ⛔ ${author}, trop de mentions dans un seul message (max ${config.max_mentions}).`);
+            const warning = await message.channel.send(`> ⛔ ${author}, trop de mentions dans un seul message (max ${config.automod.max_mentions}).`);
             setTimeout(() => warning.delete().catch(() => {}), 5000);
         } catch (error) {
             console.error(`❌ Erreur lors de la gestion des mentions excessives :`, error);
@@ -465,9 +567,12 @@ async function automod(message) {
 // ----------------------------------------------
 
 // Terminer un giveaway
-async function endGiveaway(messageId, guild, reroll = false) {
+async function endGiveaway(messageId, guildId, reroll = false) {
     const giveaway = db.giveaways[messageId];
     if (!giveaway || (giveaway.ended && !reroll)) return;
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
 
     const channel = guild.channels.cache.get(giveaway.channelId);
     if (!channel) return;
@@ -492,7 +597,8 @@ async function endGiveaway(messageId, guild, reroll = false) {
             { name: "🏆 Prix", value: giveaway.prize, inline: false },
             { name: "👑 Gagnant(s)", value: winners.map(id => `<@${id}>`).join(", "), inline: false },
             { name: "👥 Participants", value: participants.length.toString(), inline: true }
-        ]
+        ],
+        db.config.gifs.giveaway
     );
 
     await channel.send({
@@ -504,8 +610,8 @@ async function endGiveaway(messageId, guild, reroll = false) {
     giveaway.winners = winners;
 
     for (const winnerId of winners) {
-        const winner = initUser(winnerId);
-        winner.coins += 500;
+        const user = initUser(winnerId);
+        user.coins += 500;
     }
     save();
 }
@@ -515,10 +621,7 @@ setInterval(async () => {
     const now = Date.now();
     for (const [messageId, giveaway] of Object.entries(db.giveaways)) {
         if (!giveaway.ended && giveaway.endTime <= now) {
-            const guild = client.guilds.cache.get(giveaway.guildId);
-            if (guild) {
-                await endGiveaway(messageId, guild);
-            }
+            await endGiveaway(messageId, giveaway.guildId);
         }
     }
 }, 30000);
@@ -527,7 +630,7 @@ setInterval(async () => {
 // --------------------------------------------
 
 // Réclamer la récompense quotidienne
-async function claimDaily(userId) {
+async function claimDaily(userId, guildId) {
     const user = initUser(userId);
     const now = Date.now();
     const lastDaily = user.lastDaily || 0;
@@ -540,14 +643,24 @@ async function claimDaily(userId) {
     const reward = Math.floor(Math.random() * (DAILY_REWARD_MAX - DAILY_REWARD_MIN + 1)) + DAILY_REWARD_MIN;
     user.coins += reward;
     user.lastDaily = now;
+
+    // Vérifier la quête "Première Récompense Quotidienne"
+    if (!user.quests) user.quests = {};
+    if (!user.quests.daily_1_completed) {
+        user.quests.daily_1_completed = true;
+        user.coins += db.config.quests.daily_1.reward;
+        return `🎁 Tu as reçu **${reward} coins** + **${db.config.quests.daily_1.reward} coins** (quête complétée) ! Solde total : **${user.coins}**.`;
+    }
+
     save();
     return `🎁 Tu as reçu **${reward} coins** ! Solde total : **${user.coins}**.`;
 }
 
 // Acheter un article dans la boutique
-async function buyItem(userId, itemName, guild, member) {
+async function buyItem(userId, itemName, guildId, member) {
     const user = initUser(userId);
-    const item = db.config.shop[itemName];
+    const config = initConfig(guildId);
+    const item = config.shop[itemName];
 
     if (!item) {
         return `❌ L'article **${itemName}** n'existe pas dans la boutique.`;
@@ -558,10 +671,14 @@ async function buyItem(userId, itemName, guild, member) {
     }
 
     user.coins -= item.price;
+    if (!user.inventory) user.inventory = [];
     user.inventory.push(itemName);
 
     try {
-        await member.roles.add(item.roleId);
+        const guild = client.guilds.cache.get(guildId);
+        if (guild) {
+            await member.roles.add(item.roleId);
+        }
     } catch (error) {
         console.error(`❌ Impossible d'attribuer le rôle pour l'article ${itemName} :`, error);
         return `✅ Tu as acheté **${itemName}** ! Mais une erreur est survenue lors de l'attribution du rôle.`;
@@ -575,26 +692,29 @@ async function buyItem(userId, itemName, guild, member) {
 // --------------------------------------------
 
 // Créer un ticket
-async function createTicket(guild, user) {
-    if (!db.config.ticket_cat) {
-        return "❌ La catégorie des tickets n'est pas configurée. Utilise `/setup-tickets`.";
+async function createTicket(guild, user, interaction) {
+    await interaction.deferReply();
+
+    const config = initConfig(guild.id);
+    if (!config.ticket_cat) {
+        return interaction.editReply("❌ La catégorie des tickets n'est pas configurée. Utilise `/setup-tickets`.");
     }
 
     const existingTicket = Object.entries(db.tickets).find(([_, ticket]) => ticket.userId === user.id && !ticket.closed);
     if (existingTicket) {
-        return `❌ Tu as déjà un ticket ouvert : <#${existingTicket[0]}>.`;
+        return interaction.editReply(`❌ Tu as déjà un ticket ouvert : <#${existingTicket[0]}>.`);
     }
 
     try {
         const channel = await guild.channels.create({
             name: `ticket-${user.username}`,
             type: ChannelType.GuildText,
-            parent: db.config.ticket_cat,
+            parent: config.ticket_cat,
             permissionOverwrites: [
                 { id: guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
                 { id: user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-                ...(db.config.staff_role ? [
-                    { id: db.config.staff_role, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+                ...(config.staff_role ? [
+                    { id: config.staff_role, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
                 ] : [])
             ]
         });
@@ -629,8 +749,8 @@ async function createTicket(guild, user) {
             components: [closeButton]
         });
 
-        if (db.config.logs) {
-            const logChannel = guild.channels.cache.get(db.config.logs);
+        if (config.logs) {
+            const logChannel = guild.channels.cache.get(config.logs);
             if (logChannel) {
                 const embed = createEmbed(
                     "🎫 NOUVEAU TICKET",
@@ -645,22 +765,30 @@ async function createTicket(guild, user) {
             }
         }
 
-        return `✅ Ton ticket a été ouvert : <#${channel.id}>.`;
+        return interaction.editReply(`✅ Ton ticket a été ouvert : <#${channel.id}>.`);
     } catch (error) {
         console.error("❌ Erreur lors de la création du ticket :", error);
-        return "❌ Une erreur est survenue lors de la création du ticket.";
+        return interaction.editReply("❌ Une erreur est survenue lors de la création du ticket.");
     }
 }
 
 // Fermer un ticket
-async function closeTicket(channelId, guild, closer) {
+async function closeTicket(channelId, guild, closer, interaction = null) {
     const ticket = db.tickets[channelId];
     if (!ticket) {
+        if (interaction) return interaction.reply({ content: "❌ Ce salon n'est pas un ticket.", ephemeral: true });
         return "❌ Ce salon n'est pas un ticket.";
     }
 
     if (ticket.closed) {
+        if (interaction) return interaction.reply({ content: "❌ Ce ticket est déjà fermé.", ephemeral: true });
         return "❌ Ce ticket est déjà fermé.";
+    }
+
+    const config = initConfig(guild.id);
+    if (!isStaff(closer, guild.id) && ticket.userId !== closer.id) {
+        if (interaction) return interaction.reply({ content: "❌ Permission refusée.", ephemeral: true });
+        return "❌ Permission refusée.";
     }
 
     ticket.closed = true;
@@ -670,8 +798,8 @@ async function closeTicket(channelId, guild, closer) {
     if (channel) {
         await channel.send("🔒 Ticket fermé. Ce salon sera supprimé dans **10 secondes**.");
 
-        if (db.config.logs) {
-            const logChannel = guild.channels.cache.get(db.config.logs);
+        if (config.logs) {
+            const logChannel = guild.channels.cache.get(config.logs);
             if (logChannel) {
                 const embed = createEmbed(
                     "🎫 TICKET FERMÉ",
@@ -691,6 +819,7 @@ async function closeTicket(channelId, guild, closer) {
         }, 10000);
     }
 
+    if (interaction) return interaction.reply("✅ Ticket fermé avec succès.");
     return "✅ Ticket fermé avec succès.";
 }
 
@@ -770,7 +899,10 @@ const commands = [
                     { name: 'Facture', value: 'facture' },
                     { name: 'Blacklist', value: 'bl' },
                     { name: 'Welcome', value: 'welcome' },
-                    { name: 'Level Up', value: 'level' }
+                    { name: 'Level Up', value: 'level' },
+                    { name: 'Daily', value: 'daily' },
+                    { name: 'Shop', value: 'shop' },
+                    { name: 'Giveaway', value: 'giveaway' }
                 ))
         .addStringOption(option =>
             option.setName('url')
@@ -1162,7 +1294,9 @@ const commands = [
                     { name: 'Yandere', value: 'yandere' },
                     { name: 'Robot', value: 'robot' },
                     { name: 'Pirate', value: 'pirate' },
-                    { name: 'Détective', value: 'detective' }
+                    { name: 'Détective', value: 'detective' },
+                    { name: 'Dragon', value: 'dragon' },
+                    { name: 'Vampire', value: 'vampire' }
                 )),
 
     new SlashCommandBuilder()
@@ -1194,7 +1328,9 @@ const commands = [
                     { name: 'Yandere', value: 'yandere' },
                     { name: 'Robot', value: 'robot' },
                     { name: 'Pirate', value: 'pirate' },
-                    { name: 'Détective', value: 'detective' }
+                    { name: 'Détective', value: 'detective' },
+                    { name: 'Dragon', value: 'dragon' },
+                    { name: 'Vampire', value: 'vampire' }
                 ))
         .addStringOption(option =>
             option.setName('prompt')
@@ -1289,7 +1425,28 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('📖 Afficher l\'aide et la liste des commandes')
+        .setDescription('📖 Afficher l\'aide et la liste des commandes'),
+
+    new SlashCommandBuilder()
+        .setName('quests')
+        .setDescription('🏆 Voir tes quêtes en cours'),
+
+    new SlashCommandBuilder()
+        .setName('add-quest')
+        .setDescription('➕ Ajouter une quête personnalisée (Admin)')
+        .addStringOption(option =>
+            option.setName('nom')
+                .setDescription('Nom de la quête')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('description')
+                .setDescription('Description de la quête')
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName('recompense')
+                .setDescription('Récompense en coins')
+                .setRequired(true)
+                .setMinValue(1))
 ];
 
 // ========== 12. CLIENT DISCORD ==========
@@ -1300,7 +1457,8 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildPresences
     ]
 });
 
@@ -1315,31 +1473,79 @@ http.createServer((req, res) => {
 // ========== 13. GESTION DES ÉVÉNEMENTS ==========
 // ------------------------------------------------
 client.on(Events.InteractionCreate, async interaction => {
+    // Toujours déférer la réponse pour les commandes slash
     if (interaction.isChatInputCommand()) {
-        const { commandName, options, guild, member, user, channel } = interaction;
         await interaction.deferReply().catch(() => {});
-        const config = await initConfig(guild.id);
+
+        const { commandName, options, guild, member, user, channel } = interaction;
+        const config = initConfig(guild.id);
+
+        // ===== COMMANDES DE BASE =====
+        if (commandName === 'ping') {
+            return interaction.editReply(`🏓 Latence : **${client.ws.ping}ms** | API : **${Date.now() - interaction.createdTimestamp}ms**`);
+        }
+
+        if (commandName === 'help') {
+            const embed = createEmbed(
+                "📖 MANUEL — PARADISE OVERLORD V19",
+                "Voici la liste des commandes disponibles :",
+                COLORS.DEFAULT,
+                [
+                    { name: "🛡️ Modération", value: "`/ban`, `/kick`, `/mute`, `/warn`, `/clear`, `/bl`, `/slowmode`, `/lock`", inline: false },
+                    { name: "🤖 IA", value: "`/ask`, `/mode`, `/ia-channel`, `/set-prompt` (admin)", inline: false },
+                    { name: "📈 XP & Économie", value: "`/rank`, `/leaderboard`, `/balance`, `/pay`, `/daily`, `/shop`, `/buy`, `/quests`", inline: false },
+                    { name: "🎉 Giveaways", value: "`/giveaway`, `/giveaway-end`, `/giveaway-reroll`", inline: false },
+                    { name: "📊 Sondages", value: "`/poll`", inline: false },
+                    { name: "🎫 Tickets", value: "`/ticket`, `/ticket-close`, `/ticket-add`", inline: false },
+                    { name: "ℹ️ Infos", value: "`/stats`, `/userinfo`, `/server-info`, `/avatar`", inline: false },
+                    { name: "⚙️ Setup", value: "`/setup-logs`, `/setup-welcome`, `/setup-staff`, etc.", inline: false }
+                ],
+                null,
+                null,
+                { text: "Paradise Overlord V19 — Système Ultime" }
+            );
+            return interaction.editReply({ embeds: [embed] });
+        }
 
         // ===== COMMANDES DE SETUP =====
         if (commandName === 'setup-logs') {
-            if (!isStaff(member, config)) return interaction.editReply("❌ Permission refusée.");
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
             config.logs = options.getChannel('salon').id;
             save();
             return interaction.editReply(`✅ Salon des logs défini : <#${config.logs}>.`);
         }
 
         if (commandName === 'setup-welcome') {
-            if (!isStaff(member, config)) return interaction.editReply("❌ Permission refusée.");
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
             config.welcome = options.getChannel('salon').id;
             save();
             return interaction.editReply(`✅ Salon de bienvenue défini : <#${config.welcome}>.`);
         }
 
-        // ... (autres commandes setup)
+        if (commandName === 'setup-gif') {
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
+            const type = options.getString('type');
+            const url = options.getString('url');
+            config.gifs[type] = url;
+            save();
+            return interaction.editReply({
+                embeds: [new EmbedBuilder()
+                    .setTitle(`✅ GIF ${type.toUpperCase()} mis à jour`)
+                    .setImage(url)
+                    .setColor(COLORS.SUCCESS)]
+            });
+        }
+
+        if (commandName === 'setup-ai') {
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
+            config.ai_identity = options.getString('identite');
+            save();
+            return interaction.editReply(`✅ Identité IA mise à jour.`);
+        }
 
         // ===== COMMANDES DE MODÉRATION =====
         if (commandName === 'ban') {
-            if (!isStaff(member, config)) return interaction.editReply("❌ Permission refusée.");
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
             const target = options.getUser('cible');
             const reason = options.getString('raison');
             const silent = options.getBoolean('silent') || false;
@@ -1371,27 +1577,63 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         }
 
+        if (commandName === 'kick') {
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
+            const target = options.getMember('cible');
+            const reason = options.getString('raison');
+
+            try {
+                await target.send({
+                    embeds: [new EmbedBuilder()
+                        .setTitle("👢 Tu as été expulsé")
+                        .setColor(COLORS.WARNING)
+                        .addFields(
+                            { name: "Serveur", value: guild.name },
+                            { name: "Raison", value: reason }
+                        )]
+                });
+            } catch (error) {
+                console.log("⚠️ Impossible d'envoyer un DM à l'utilisateur expulsé.");
+            }
+
+            await target.kick(reason).catch(() => {});
+            const embed = createEmbed(
+                "👢 KICK",
+                `**${target.user.tag}** a été expulsé.`,
+                COLORS.WARNING,
+                [
+                    { name: "Raison", value: reason, inline: false },
+                    { name: "Modérateur", value: user.tag, inline: true }
+                ]
+            );
+            if (config.logs) {
+                const logChannel = guild.channels.cache.get(config.logs);
+                if (logChannel) await logChannel.send({ embeds: [embed] }).catch(() => {});
+            }
+            return interaction.editReply({ embeds: [embed] });
+        }
+
         // ... (autres commandes de modération)
 
         // ===== COMMANDES D'IA =====
         if (commandName === 'ask') {
             const question = options.getString('question');
             await interaction.editReply("🤖 **Paradise Overlord IA** : Analyse en cours...");
-            const response = await askMistral(question, config.ai_current_mode);
+            const response = await askMistral(question, guild.id);
             return interaction.editReply(`**🤖 PARADISE OVERLORD IA (${config.ai_modes[config.ai_current_mode].name}) :**\n${response}`);
         }
 
         if (commandName === 'mode') {
             const mode = options.getString('mode');
-            const result = changeAIMode(mode);
+            const result = changeAIMode(guild.id, mode);
             return interaction.editReply(result);
         }
 
         if (commandName === 'ia-channel') {
-            if (!isStaff(member, config)) return interaction.editReply("❌ Permission refusée.");
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
             const channel = options.getChannel('salon');
             const activate = options.getBoolean('activer');
-            const result = toggleIAChannel(channel.id, activate);
+            const result = toggleIAChannel(channel.id, guild.id, activate);
             return interaction.editReply(result);
         }
 
@@ -1399,7 +1641,7 @@ client.on(Events.InteractionCreate, async interaction => {
             if (!isAdmin(user.id)) return interaction.editReply("❌ Permission refusée. Cette commande est réservée à l'admin.");
             const mode = options.getString('mode');
             const newPrompt = options.getString('prompt');
-            const result = changeAIPrompt(mode, newPrompt);
+            const result = changeAIPrompt(guild.id, mode, newPrompt);
             return interaction.editReply(result);
         }
 
@@ -1417,49 +1659,210 @@ client.on(Events.InteractionCreate, async interaction => {
                     { name: "🎒 Inventaire", value: userData.inventory.length > 0 ? userData.inventory.join(", ") : "Vide", inline: false }
                 ],
                 null,
-                target.displayAvatarURL()
+                target.displayAvatarURL(),
+                { text: "Utilise /daily pour réclamer ta récompense quotidienne !" }
             );
             return interaction.editReply({ embeds: [embed] });
         }
 
         if (commandName === 'daily') {
-            const result = await claimDaily(user.id);
+            const result = await claimDaily(user.id, guild.id);
             return interaction.editReply(result);
         }
 
-        // ... (autres commandes d'économie)
+        if (commandName === 'shop') {
+            const items = Object.entries(config.shop);
+            if (items.length === 0) return interaction.editReply("🏪 La boutique est vide.");
+
+            const embed = createEmbed(
+                "🏪 BOUTIQUE DU SERVEUR",
+                "Voici les articles disponibles à l'achat :",
+                COLORS.PURPLE,
+                items.map(([name, item]) => ({
+                    name: `**${name}** — ${item.price} 💎`,
+                    value: `${item.description || "Aucune description"}\n→ <@&${item.roleId}>`,
+                    inline: false
+                })),
+                config.gifs.shop,
+                null,
+                { text: "Utilise /buy <article> pour acheter un article" }
+            );
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        if (commandName === 'buy') {
+            const itemName = options.getString('article');
+            const result = await buyItem(user.id, itemName, guild.id, member);
+            return interaction.editReply(result);
+        }
 
         // ===== COMMANDES DE TICKETS =====
         if (commandName === 'ticket') {
-            const result = await createTicket(guild, user);
+            const result = await createTicket(guild, user, interaction);
             return interaction.editReply(result);
         }
 
         if (commandName === 'ticket-close') {
-            if (!db.tickets[channel.id]) return interaction.editReply("❌ Ce salon n'est pas un ticket.");
-            if (!isStaff(member, config) && db.tickets[channel.id].userId !== user.id) return interaction.editReply("❌ Permission refusée.");
-            const result = await closeTicket(channel.id, guild, user);
+            const result = await closeTicket(channel.id, guild, user, interaction);
             return interaction.editReply(result);
         }
 
-        // ... (autres commandes)
+        // ===== COMMANDES DE GIVEAWAYS =====
+        if (commandName === 'giveaway') {
+            if (!isStaff(member, guild.id)) return interaction.editReply("❌ Permission refusée.");
+
+            const prize = options.getString('prix');
+            const duration = options.getInteger('duree');
+            const winnersCount = options.getInteger('gagnants');
+            const channel = options.getChannel('salon') || interaction.channel;
+
+            const endTime = Date.now() + duration * 60000;
+            const endDate = new Date(endTime);
+
+            const embed = new EmbedBuilder()
+                .setTitle("🎉 GIVEAWAY !")
+                .setColor(COLORS.GOLD)
+                .addFields(
+                    { name: "🏆 Prix", value: prize },
+                    { name: "👑 Gagnants", value: `${winnersCount}` },
+                    { name: "⏰ Fin", value: `<t:${Math.floor(endTime / 1000)}:R>` },
+                    { name: "🚀 Organisateur", value: `${user}` }
+                )
+                .setFooter({ text: "Clique sur le bouton pour participer !" })
+                .setTimestamp(endDate);
+
+            const msg = await channel.send({
+                embeds: [embed],
+                components: [
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`ga_join_${Date.now()}`)
+                            .setLabel("🎉 Participer")
+                            .setStyle(ButtonStyle.Primary)
+                    )
+                ]
+            });
+
+            db.giveaways[msg.id] = {
+                prize,
+                endTime,
+                channelId: channel.id,
+                winnersCount,
+                participants: [],
+                ended: false,
+                guildId: guild.id
+            };
+            save();
+
+            return interaction.editReply(`✅ Giveaway créé dans <#${channel.id}> !`);
+        }
+
+        // ===== COMMANDES DE SONDAGES =====
+        if (commandName === 'poll') {
+            const question = options.getString('question');
+            const options = [
+                options.getString('option1'),
+                options.getString('option2'),
+                options.getString('option3') || null,
+                options.getString('option4') || null
+            ].filter(Boolean);
+
+            const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 ${question}`)
+                .setColor(COLORS.INFO)
+                .setDescription(options.map((opt, idx) => `**${emojis[idx]} ${opt}**\n\`${"░".repeat(10)}\` 0% (0)`).join("\n\n"))
+                .setFooter({ text: "Clique sur un bouton pour voter" })
+                .setTimestamp();
+
+            const row = new ActionRowBuilder().addComponents(
+                options.map((opt, idx) =>
+                    new ButtonBuilder()
+                        .setCustomId(`poll_${Date.now()}_${idx}`)
+                        .setLabel(`${emojis[idx]} ${opt.slice(0, 20)}`)
+                        .setStyle(ButtonStyle.Secondary)
+                )
+            );
+
+            const msg = await interaction.editReply({
+                embeds: [embed],
+                components: [row]
+            });
+
+            db.polls[msg.id] = {
+                question,
+                options,
+                votes: {},
+                channelId: channel.id,
+                guildId: guild.id
+            };
+            save();
+        }
 
         // ===== COMMANDES D'INFOS =====
-        if (commandName === 'help') {
+        if (commandName === 'userinfo') {
+            const target = options.getMember('cible') || member;
+            const roles = target.roles.cache
+                .filter(r => r.id !== guild.roles.everyone.id)
+                .map(r => `<@&${r.id}>`)
+                .join(", ") || "Aucun";
+
             const embed = createEmbed(
-                "📖 MANUEL — PARADISE OVERLORD V19",
-                "Voici la liste des commandes disponibles :",
-                COLORS.DEFAULT,
+                `👤 ${target.user.username}`,
+                `Informations sur ${target.user.tag} :`,
+                COLORS.INFO,
                 [
-                    { name: "🛡️ Modération", value: "`/ban`, `/kick`, `/mute`, `/warn`, `/clear`, `/bl`, `/slowmode`, `/lock`", inline: false },
-                    { name: "🤖 IA", value: "`/ask`, `/mode`, `/ia-channel`, `/set-prompt` (admin)", inline: false },
-                    { name: "📈 XP & Économie", value: "`/rank`, `/leaderboard`, `/balance`, `/pay`, `/daily`, `/shop`, `/buy`", inline: false },
-                    { name: "🎉 Giveaways", value: "`/giveaway`, `/giveaway-end`, `/giveaway-reroll`", inline: false },
-                    { name: "🎫 Tickets", value: "`/ticket`, `/ticket-close`, `/ticket-add`", inline: false },
-                    { name: "ℹ️ Infos", value: "`/stats`, `/userinfo`, `/server-info`, `/ping`, `/help`", inline: false }
-                ]
+                    { name: "🆔 ID", value: target.id, inline: true },
+                    { name: "📛 Pseudo", value: target.displayName, inline: true },
+                    { name: "🤖 Bot", value: target.user.bot ? "Oui" : "Non", inline: true },
+                    { name: "📅 Compte créé", value: time(Math.floor(target.user.createdTimestamp / 1000), "D"), inline: true },
+                    { name: "📥 Rejoint le", value: time(Math.floor(target.joinedTimestamp / 1000), "D"), inline: true },
+                    { name: "🎭 Rôles", value: roles.length > 1024 ? roles.slice(0, 1020) + "..." : roles }
+                ],
+                null,
+                target.user.displayAvatarURL()
             );
             return interaction.editReply({ embeds: [embed] });
+        }
+
+        if (commandName === 'quests') {
+            const userData = initUser(user.id);
+            const config = initConfig(guild.id);
+            const quests = Object.entries(config.quests).map(([id, quest]) => {
+                const completed = userData.quests?.[`${id}_completed`] || false;
+                return {
+                    name: `${completed ? "✅" : "❌"} ${quest.name}`,
+                    value: `${quest.description}\n**Récompense** : ${quest.reward} 💎`,
+                    inline: false
+                };
+            });
+
+            const embed = createEmbed(
+                "🏆 TES QUÊTES",
+                "Voici tes quêtes en cours :",
+                COLORS.GOLD,
+                quests
+            );
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // ===== COMMANDES ADMIN =====
+        if (commandName === 'add-quest') {
+            if (!isAdmin(user.id)) return interaction.editReply("❌ Permission refusée. Cette commande est réservée à l'admin.");
+
+            const name = options.getString('nom');
+            const description = options.getString('description');
+            const reward = options.getInteger('recompense');
+
+            const newQuestId = `custom_${Date.now()}`;
+            config.quests[newQuestId] = {
+                name,
+                description,
+                reward
+            };
+            save();
+
+            return interaction.editReply(`✅ Quête personnalisée ajoutée : **${name}** (${reward} 💎).`);
         }
     }
 
@@ -1467,8 +1870,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton()) {
         const { customId, guild, channel, member, user } = interaction;
 
+        // Boutons de giveaway
         if (customId.startsWith('ga_join_')) {
-            const messageId = customId.replace('ga_join_', '');
+            const messageId = customId.split('_')[2];
             const giveaway = db.giveaways[messageId];
             if (!giveaway || giveaway.ended) {
                 return interaction.reply({ content: "❌ Ce giveaway est terminé.", ephemeral: true });
@@ -1486,9 +1890,39 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         }
 
+        // Boutons de sondage
+        if (customId.startsWith('poll_')) {
+            const [_, pollId, optionIndex] = customId.split('_');
+            const poll = db.polls[pollId];
+            if (!poll) return interaction.reply({ content: "❌ Sondage introuvable.", ephemeral: true });
+
+            poll.votes[user.id] = parseInt(optionIndex);
+            save();
+
+            // Recalculer les stats
+            const totals = poll.options.map((_, idx) =>
+                Object.values(poll.votes).filter(v => v === idx).length
+            );
+            const total = totals.reduce((a, b) => a + b, 0);
+            const bars = totals.map((count, idx) => {
+                const pct = total ? Math.round((count / total) * 100) : 0;
+                const bar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+                return `**${poll.options[idx]}**\n\`${bar}\` ${pct}% (${count})`;
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 ${poll.question}`)
+                .setColor(COLORS.INFO)
+                .setDescription(bars.join("\n\n"))
+                .setFooter({ text: `${total} vote(s) au total` });
+
+            await interaction.update({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Boutons de tickets
         if (customId.startsWith('ticket_close_')) {
             const channelId = customId.replace('ticket_close_', '');
-            const result = await closeTicket(channelId, guild, user);
+            const result = await closeTicket(channelId, guild, user, interaction);
             return interaction.reply(result);
         }
     }
@@ -1522,7 +1956,7 @@ client.on(Events.MessageCreate, async message => {
     if (db.ia_channels[message.channelId] && !message.author.bot) {
         try {
             await message.channel.sendTyping();
-            const response = await askMistral(message.content, db.config.ai_current_mode);
+            const response = await askMistral(message.content, message.guild.id);
             await message.reply({
                 content: response,
                 allowedMentions: { parse: [] }
@@ -1535,7 +1969,7 @@ client.on(Events.MessageCreate, async message => {
     }
 
     // Ajouter de l'XP
-    await addXP(message.author.id, message.guild);
+    await addXP(message.author.id, message.guild.id);
 
     // Auto-modération
     await automod(message);
@@ -1545,7 +1979,7 @@ client.on(Events.MessageCreate, async message => {
 // --------------------------------------------
 client.on(Events.MessageDelete, async message => {
     if (!message.guild || message.author?.bot) return;
-    const config = await initConfig(message.guild.id);
+    const config = initConfig(message.guild.id);
     if (!config.logs) return;
 
     const logChannel = message.guild.channels.cache.get(config.logs);
@@ -1565,7 +1999,7 @@ client.on(Events.MessageDelete, async message => {
 });
 
 client.on(Events.GuildMemberAdd, async member => {
-    const config = await initConfig(member.guild.id);
+    const config = initConfig(member.guild.id);
 
     if (config.welcome) {
         const channel = member.guild.channels.cache.get(config.welcome);
@@ -1576,7 +2010,8 @@ client.on(Events.GuildMemberAdd, async member => {
                 COLORS.SUCCESS,
                 [],
                 config.gifs.welcome,
-                member.user.displayAvatarURL()
+                member.user.displayAvatarURL(),
+                { text: "N'oublie pas de lire les règles et de t'amuser !" }
             );
             await channel.send({ content: `${member}`, embeds: [embed] }).catch(() => {});
         }
