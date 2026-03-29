@@ -630,7 +630,7 @@ function isStaff(member) {
 }
 
 function isOwner(userId) {
-    return userId === (db.config.owner_id || process.env.OWNER_ID);
+    return userId === (db.config.owner_id || process.env.1404076132890050571);
 }
 
 async function sendLog(guild, embed) {
