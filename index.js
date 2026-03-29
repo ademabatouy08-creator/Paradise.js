@@ -1,8 +1,7 @@
-// ╔══════════════════════════════════════════════════════════════════════╗
-// ║         PARADISE OVERLORD V20 — SYSTÈME ULTIME ABSOLU              ║
-// ║  Modération | IA Multi-Mode | Économie | XP | Giveaway | Tickets   ║
-// ║  Factures Pro | Casier Détaillé | Auto-Mod | Logs Complets         ║
-// ╚══════════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║          PARADISE OVERLORD V19 — SYSTÈME ULTIME                 ║
+// ║  Modération | IA | Économie | XP | Giveaway | Tickets | Auto-Mod║
+// ╚══════════════════════════════════════════════════════════════════╝
 
 const {
     Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField,
@@ -18,21 +17,15 @@ const http = require('http');
 // ════════════════════════════════════════════
 //  1. BASE DE DONNÉES PERSISTANTE
 // ════════════════════════════════════════════
-const DATA_FILE = './paradise_overlord_v20.json';
-
-const DEFAULT_DB = {
+const DATA_FILE = './paradise_overlord_v19.json';
+let db = {
     config: {
         logs: null, welcome: null, bl_chan: null, wl_cat: null,
         staff_role: null, ticket_cat: null, muted_role: null,
-        owner_id: process.env.OWNER_ID || null,
         automod: { anti_spam: true, anti_links: false, banned_words: [], max_mentions: 5 },
-        // Prompt IA global (tous les serveurs)
-        ai_identity: "Tu es Paradise Overlord, l'intelligence supérieure du serveur. Tu es froid, autoritaire et ultra-précis. Tu réponds toujours en français.",
-        // Mode IA global actif par défaut
-        ai_mode: "overlord",
-        xp_roles: {},
-        shop: {},
-        facture_counter: 1,
+        ai_identity: "Tu es Paradise Overlord, l'intelligence supérieure du serveur. Tu es froid, autoritaire et ultra-précis.",
+        xp_roles: {},   // { level: roleId }
+        shop: {},       // { itemName: { price, roleId, description } }
         gifs: {
             ban:     "https://media.giphy.com/media/3o7TKVUn7iM8FMEU24/giphy.gif",
             mute:    "https://media.giphy.com/media/3o7TKMGpxP5P90bQxq/giphy.gif",
@@ -43,37 +36,19 @@ const DEFAULT_DB = {
             level:   "https://media.giphy.com/media/26tPo2I4yYBxsb3Nm/giphy.gif"
         }
     },
-    // Paramètres IA par serveur (override le global)
-    servers: {},
-    users: {},
-    giveaways: {},
-    polls: {},
-    tickets: {},
-    factures: {},
-    economy: { transactions: [] },
-    spam_tracker: {}
+    users: {},      // { userId: { bans, mutes, warns, xp, level, coins, blacklisted, warnReasons[] } }
+    giveaways: {},  // { messageId: { prize, endTime, channelId, winnersCount, participants[], ended } }
+    polls: {},      // { messageId: { question, options, votes: {userId: optIndex}, channelId } }
+    tickets: {},    // { channelId: { userId, createdAt, closed } }
+    economy: {
+        transactions: []  // { from, to, amount, reason, timestamp }
+    },
+    spam_tracker: {} // { userId: { count, last } }
 };
 
-let db = JSON.parse(JSON.stringify(DEFAULT_DB));
-
 if (fs.existsSync(DATA_FILE)) {
-    try {
-        const saved = JSON.parse(fs.readFileSync(DATA_FILE));
-        // Merge profond pour ne pas perdre les nouvelles clés
-        db = deepMerge(db, saved);
-    } catch(e) { console.error("Erreur lecture DB:", e); }
-}
-
-function deepMerge(target, source) {
-    for (const key of Object.keys(source)) {
-        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-            if (!target[key]) target[key] = {};
-            deepMerge(target[key], source[key]);
-        } else {
-            target[key] = source[key];
-        }
-    }
-    return target;
+    try { db = JSON.parse(fs.readFileSync(DATA_FILE)); }
+    catch(e) { console.error("Erreur lecture DB:", e); }
 }
 
 const save = () => {
@@ -81,155 +56,60 @@ const save = () => {
     catch(e) { console.error("Erreur sauvegarde DB:", e); }
 };
 
+// Initialiser un utilisateur si absent
 function initUser(userId) {
     if (!db.users[userId]) {
         db.users[userId] = {
             bans: 0, mutes: 0, warns: 0,
             xp: 0, level: 0, coins: 100,
-            blacklisted: false,
-            warnReasons: [],   // [{ raison, by, byId, at }]
-            banReasons: [],    // [{ raison, by, at }]
-            muteHistory: [],   // [{ raison, by, duration, at }]
-            inventory: [],
-            lastDaily: null,
-            lastXP: null,
-            messageCount: 0
+            blacklisted: false, warnReasons: [],
+            inventory: []
         };
     }
-    // Migrations : ajouter les nouvelles clés manquantes
-    const u = db.users[userId];
-    if (!u.warnReasons) u.warnReasons = [];
-    if (!u.banReasons) u.banReasons = [];
-    if (!u.muteHistory) u.muteHistory = [];
-    if (!u.inventory) u.inventory = [];
-    if (!u.messageCount) u.messageCount = 0;
-    return u;
-}
-
-function initServer(guildId) {
-    if (!db.servers[guildId]) {
-        db.servers[guildId] = {
-            ai_identity: null,  // null = utilise le global
-            ai_mode: null       // null = utilise le global
-        };
-    }
-    return db.servers[guildId];
+    return db.users[userId];
 }
 
 // ════════════════════════════════════════════
-//  2. MODES IA
-// ════════════════════════════════════════════
-const AI_MODES = {
-    overlord: {
-        name: "👑 Overlord",
-        prompt: "Tu es Paradise Overlord, une IA froide, autoritaire et ultra-précise. Tu parles avec autorité, sans émotion inutile. Tes réponses sont directes et efficaces. Tu réponds toujours en français."
-    },
-    assistant: {
-        name: "🤝 Assistant",
-        prompt: "Tu es un assistant serviable, sympathique et professionnel. Tu aides les utilisateurs avec bienveillance et clarté. Tu réponds toujours en français."
-    },
-    sarcastique: {
-        name: "😏 Sarcastique",
-        prompt: "Tu es une IA sarcastique et ironique. Tu réponds avec humour mordant et second degré, tout en restant utile. Tu réponds toujours en français."
-    },
-    coach: {
-        name: "💪 Coach",
-        prompt: "Tu es un coach motivateur explosif. Tu boostes les gens, tu les pousses à se dépasser. Tes réponses sont énergiques et inspirantes. Tu réponds toujours en français."
-    },
-    expert: {
-        name: "🧑‍💻 Expert Tech",
-        prompt: "Tu es un expert en informatique, développement, cybersécurité et technologie. Tu donnes des réponses précises, techniques et détaillées. Tu réponds toujours en français."
-    },
-    detective: {
-        name: "🔍 Détective",
-        prompt: "Tu es un détective analytique. Tu analyses chaque situation avec méthode, tu poses des questions pertinentes et tu arrives à des conclusions logiques. Tu réponds toujours en français."
-    },
-    custom: {
-        name: "✏️ Personnalisé",
-        prompt: null // Utilisera ai_identity de la config
-    }
-};
-
-// ════════════════════════════════════════════
-//  3. CLIENT DISCORD
+//  2. CLIENT DISCORD
 // ════════════════════════════════════════════
 const client = new Client({ intents: 3276799 });
 
+// Serveur HTTP keepalive
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.write("Paradise Overlord V20: ONLINE"); res.end();
+    res.write("Paradise Overlord V19: ONLINE"); res.end();
 }).listen(process.env.PORT || 10000);
 
 // ════════════════════════════════════════════
-//  4. REGISTRE DES COMMANDES
+//  3. REGISTRE DES COMMANDES (ARSENAL COMPLET)
 // ════════════════════════════════════════════
 const commands = [
-
-    // ── SETUPS ──────────────────────────────────────────────────────────
+    // ── SETUPS ──────────────────────────────
     new SlashCommandBuilder().setName('setup-logs').setDescription('📑 Salon des logs de sécurité')
         .addChannelOption(o => o.setName('salon').setDescription('Salon des logs').setRequired(true)),
     new SlashCommandBuilder().setName('setup-welcome').setDescription('👋 Salon de bienvenue')
         .addChannelOption(o => o.setName('salon').setDescription('Salon bienvenue').setRequired(true)),
-    new SlashCommandBuilder().setName('setup-blacklist').setDescription('🚫 Salon isolation Blacklist')
+    new SlashCommandBuilder().setName('setup-blacklist').setDescription('🚫 Salon d\'isolation Blacklist')
         .addChannelOption(o => o.setName('salon').setDescription('Salon isolation').setRequired(true)),
     new SlashCommandBuilder().setName('setup-whitelist').setDescription('📝 Catégorie Whitelist Staff')
         .addChannelOption(o => o.setName('cat').setDescription('Catégorie WL').setRequired(true).addChannelTypes(ChannelType.GuildCategory)),
     new SlashCommandBuilder().setName('setup-staff').setDescription('👑 Rôle Staff autorisé')
         .addRoleOption(o => o.setName('role').setDescription('Rôle staff').setRequired(true)),
-    new SlashCommandBuilder().setName('setup-tickets').setDescription('🎫 Catégorie tickets support')
+    new SlashCommandBuilder().setName('setup-tickets').setDescription('🎫 Catégorie pour les tickets support')
         .addChannelOption(o => o.setName('cat').setDescription('Catégorie tickets').setRequired(true).addChannelTypes(ChannelType.GuildCategory)),
-    new SlashCommandBuilder().setName('setup-muted').setDescription('🔇 Rôle Muted')
+    new SlashCommandBuilder().setName('setup-muted').setDescription('🔇 Rôle Muted (créer manuellement)')
         .addRoleOption(o => o.setName('role').setDescription('Rôle muted').setRequired(true)),
     new SlashCommandBuilder().setName('setup-gif').setDescription('🖼️ Modifier les visuels')
         .addStringOption(o => o.setName('type').setDescription('Type').setRequired(true)
             .addChoices(
                 {name:'Ban',value:'ban'},{name:'Mute',value:'mute'},{name:'Warn',value:'warn'},
-                {name:'Facture',value:'facture'},{name:'BL',value:'bl'},
-                {name:'Welcome',value:'welcome'},{name:'Level Up',value:'level'}
+                {name:'Facture',value:'facture'},{name:'BL',value:'bl'},{name:'Welcome',value:'welcome'},{name:'Level',value:'level'}
             ))
-        .addStringOption(o => o.setName('url').setDescription('URL directe du GIF/image').setRequired(true)),
-    new SlashCommandBuilder().setName('setup-xp-role').setDescription('🎖️ Associer un rôle à un niveau XP')
-        .addIntegerOption(o => o.setName('niveau').setDescription('Niveau requis').setRequired(true).setMinValue(1))
-        .addRoleOption(o => o.setName('role').setDescription('Rôle à attribuer').setRequired(true)),
+        .addStringOption(o => o.setName('url').setDescription('URL directe du GIF').setRequired(true)),
+    new SlashCommandBuilder().setName('setup-ai').setDescription('🧠 Personnaliser l\'identité de l\'IA')
+        .addStringOption(o => o.setName('identite').setDescription('Identité/personnalité de l\'IA').setRequired(true)),
 
-    // ── IA ──────────────────────────────────────────────────────────────
-    new SlashCommandBuilder().setName('ask').setDescription('🤖 Interroger l\'IA Paradise Overlord')
-        .addStringOption(o => o.setName('q').setDescription('Ta question').setRequired(true)),
-    new SlashCommandBuilder().setName('ia-mode').setDescription('🧠 Changer le mode de l\'IA')
-        .addStringOption(o => o.setName('mode').setDescription('Mode IA').setRequired(true)
-            .addChoices(
-                { name: '👑 Overlord — Froid & Autoritaire', value: 'overlord' },
-                { name: '🤝 Assistant — Serviable & Pro', value: 'assistant' },
-                { name: '😏 Sarcastique — Ironique & Drôle', value: 'sarcastique' },
-                { name: '💪 Coach — Motivateur & Explosif', value: 'coach' },
-                { name: '🧑‍💻 Expert Tech — Précis & Technique', value: 'expert' },
-                { name: '🔍 Détective — Analytique & Logique', value: 'detective' },
-                { name: '✏️ Personnalisé — Ton propre prompt', value: 'custom' }
-            ))
-        .addStringOption(o => o.setName('portee').setDescription('Portée du changement').setRequired(true)
-            .addChoices(
-                { name: '🌍 Global (tous les serveurs)', value: 'global' },
-                { name: '🏠 Ce serveur uniquement', value: 'local' }
-            )),
-    new SlashCommandBuilder().setName('ia-prompt').setDescription('✏️ Définir un prompt personnalisé pour le mode Custom')
-        .addStringOption(o => o.setName('prompt').setDescription('Le prompt personnalisé').setRequired(true))
-        .addStringOption(o => o.setName('portee').setDescription('Portée').setRequired(true)
-            .addChoices(
-                { name: '🌍 Global', value: 'global' },
-                { name: '🏠 Ce serveur', value: 'local' }
-            )),
-    new SlashCommandBuilder().setName('ia-info').setDescription('ℹ️ Voir le mode IA actif sur ce serveur'),
-    new SlashCommandBuilder().setName('ia-conversation').setDescription('💬 Démarrer une conversation IA dans ce salon (répond à chaque message)')
-        .addBooleanOption(o => o.setName('activer').setDescription('Activer ou désactiver').setRequired(true)),
-    new SlashCommandBuilder().setName('resume').setDescription('📝 Résumer un texte avec l\'IA')
-        .addStringOption(o => o.setName('texte').setDescription('Texte à résumer').setRequired(true)),
-    new SlashCommandBuilder().setName('traduit').setDescription('🌍 Traduire un texte avec l\'IA')
-        .addStringOption(o => o.setName('texte').setDescription('Texte à traduire').setRequired(true))
-        .addStringOption(o => o.setName('langue').setDescription('Langue cible (ex: anglais, espagnol...)').setRequired(true)),
-    new SlashCommandBuilder().setName('corrige').setDescription('✍️ Corriger l\'orthographe d\'un texte')
-        .addStringOption(o => o.setName('texte').setDescription('Texte à corriger').setRequired(true)),
-
-    // ── AUTO-MODÉRATION ──────────────────────────────────────────────────
+    // ── AUTO-MODÉRATION ──────────────────────
     new SlashCommandBuilder().setName('automod').setDescription('🛡️ Configurer l\'auto-modération')
         .addStringOption(o => o.setName('option').setDescription('Option').setRequired(true)
             .addChoices(
@@ -237,22 +117,21 @@ const commands = [
                 {name:'Anti-liens ON/OFF',value:'links'},
                 {name:'Ajouter mot banni',value:'add_word'},
                 {name:'Retirer mot banni',value:'del_word'},
-                {name:'Max mentions',value:'mentions'},
-                {name:'Voir la config',value:'view'}
+                {name:'Max mentions',value:'mentions'}
             ))
-        .addStringOption(o => o.setName('valeur').setDescription('Valeur')),
+        .addStringOption(o => o.setName('valeur').setDescription('Valeur (ON/OFF ou le mot ou le nombre)')),
 
-    // ── MODÉRATION ───────────────────────────────────────────────────────
+    // ── MODÉRATION ───────────────────────────
     new SlashCommandBuilder().setName('ban').setDescription('🔨 Bannissement définitif')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
         .addStringOption(o => o.setName('raison').setDescription('Motif').setRequired(true))
-        .addBooleanOption(o => o.setName('silent').setDescription('Silencieux (pas d\'annonce publique)')),
+        .addBooleanOption(o => o.setName('silent').setDescription('Bannissement silencieux (DM seulement)')),
     new SlashCommandBuilder().setName('kick').setDescription('👢 Expulser du serveur')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
         .addStringOption(o => o.setName('raison').setDescription('Motif').setRequired(true)),
     new SlashCommandBuilder().setName('mute').setDescription('🔇 Museler un utilisateur')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addIntegerOption(o => o.setName('minutes').setDescription('Durée en minutes').setRequired(true).setMinValue(1).setMaxValue(40320))
+        .addIntegerOption(o => o.setName('minutes').setDescription('Durée en minutes').setRequired(true))
         .addStringOption(o => o.setName('raison').setDescription('Motif').setRequired(true)),
     new SlashCommandBuilder().setName('unmute').setDescription('🔊 Rendre la parole')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true)),
@@ -263,106 +142,62 @@ const commands = [
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true)),
     new SlashCommandBuilder().setName('clear').setDescription('🧹 Nettoyage de messages')
         .addIntegerOption(o => o.setName('nb').setDescription('Nombre (1-100)').setRequired(true).setMinValue(1).setMaxValue(100))
-        .addUserOption(o => o.setName('filtre').setDescription('Filtrer par utilisateur')),
+        .addUserOption(o => o.setName('filtre').setDescription('Supprimer uniquement les messages de cet utilisateur')),
     new SlashCommandBuilder().setName('bl').setDescription('🚫 Blacklist : Isolation immédiate')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
         .addStringOption(o => o.setName('raison').setDescription('Motif').setRequired(true)),
     new SlashCommandBuilder().setName('unbl').setDescription('✅ Libérer de la Blacklist')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true)),
-    new SlashCommandBuilder().setName('slowmode').setDescription('🐌 Slowmode sur le salon')
-        .addIntegerOption(o => o.setName('secondes').setDescription('Délai (0 = désactiver)').setRequired(true).setMinValue(0).setMaxValue(21600)),
+    new SlashCommandBuilder().setName('slowmode').setDescription('🐌 Activer le slowmode sur le salon')
+        .addIntegerOption(o => o.setName('secondes').setDescription('Délai en secondes (0 = désactiver)').setRequired(true).setMinValue(0).setMaxValue(21600)),
     new SlashCommandBuilder().setName('lock').setDescription('🔒 Verrouiller un salon'),
     new SlashCommandBuilder().setName('unlock').setDescription('🔓 Déverrouiller un salon'),
-    new SlashCommandBuilder().setName('role-give').setDescription('🎭 Donner un rôle à un membre')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('Rôle').setRequired(true)),
-    new SlashCommandBuilder().setName('role-remove').setDescription('🗑️ Retirer un rôle à un membre')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('Rôle').setRequired(true)),
 
-    // ── CASIER JUDICIAIRE ────────────────────────────────────────────────
-    new SlashCommandBuilder().setName('stats').setDescription('📊 Casier judiciaire complet')
-        .addUserOption(o => o.setName('cible').setDescription('Membre (toi si vide)')),
-    new SlashCommandBuilder().setName('warns-list').setDescription('📋 Voir tous les avertissements d\'un membre')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true)),
-    new SlashCommandBuilder().setName('casier-reset').setDescription('🔄 Réinitialiser le casier d\'un membre (Staff)')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addStringOption(o => o.setName('type').setDescription('Que réinitialiser ?').setRequired(true)
-            .addChoices(
-                { name: 'Tout', value: 'all' },
-                { name: 'Warns seulement', value: 'warns' },
-                { name: 'Mutes seulement', value: 'mutes' },
-                { name: 'Bans seulement', value: 'bans' }
-            )),
-
-    // ── XP ───────────────────────────────────────────────────────────────
+    // ── SYSTÈME XP ───────────────────────────
     new SlashCommandBuilder().setName('rank').setDescription('🏅 Voir son niveau et XP')
-        .addUserOption(o => o.setName('cible').setDescription('Membre (toi si vide)')),
-    new SlashCommandBuilder().setName('leaderboard').setDescription('🏆 Top 10 membres les plus actifs'),
-    new SlashCommandBuilder().setName('xp-give').setDescription('➕ Donner de l\'XP')
+        .addUserOption(o => o.setName('cible').setDescription('Membre (optionnel)')),
+    new SlashCommandBuilder().setName('leaderboard').setDescription('🏆 Top 10 des membres les plus actifs'),
+    new SlashCommandBuilder().setName('xp-give').setDescription('➕ Donner de l\'XP à un membre (Staff)')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addIntegerOption(o => o.setName('montant').setDescription('XP').setRequired(true).setMinValue(1)),
-    new SlashCommandBuilder().setName('xp-remove').setDescription('➖ Retirer de l\'XP')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addIntegerOption(o => o.setName('montant').setDescription('XP').setRequired(true).setMinValue(1)),
+        .addIntegerOption(o => o.setName('montant').setDescription('XP à donner').setRequired(true).setMinValue(1)),
+    new SlashCommandBuilder().setName('setup-xp-role').setDescription('🎖️ Associer un rôle à un niveau')
+        .addIntegerOption(o => o.setName('niveau').setDescription('Niveau requis').setRequired(true).setMinValue(1))
+        .addRoleOption(o => o.setName('role').setDescription('Rôle à attribuer').setRequired(true)),
 
-    // ── ÉCONOMIE ─────────────────────────────────────────────────────────
+    // ── ÉCONOMIE ─────────────────────────────
     new SlashCommandBuilder().setName('balance').setDescription('💰 Voir son solde de coins')
-        .addUserOption(o => o.setName('cible').setDescription('Membre (toi si vide)')),
-    new SlashCommandBuilder().setName('pay').setDescription('💸 Transférer des coins')
+        .addUserOption(o => o.setName('cible').setDescription('Membre (optionnel)')),
+    new SlashCommandBuilder().setName('pay').setDescription('💸 Transférer des coins à un membre')
         .addUserOption(o => o.setName('cible').setDescription('Destinataire').setRequired(true))
         .addIntegerOption(o => o.setName('montant').setDescription('Montant').setRequired(true).setMinValue(1))
         .addStringOption(o => o.setName('raison').setDescription('Motif')),
-    new SlashCommandBuilder().setName('daily').setDescription('🎁 Récompense quotidienne'),
-    new SlashCommandBuilder().setName('shop').setDescription('🏪 Boutique du serveur'),
-    new SlashCommandBuilder().setName('buy').setDescription('🛒 Acheter un article')
+    new SlashCommandBuilder().setName('daily').setDescription('🎁 Récompense quotidienne (coins)'),
+    new SlashCommandBuilder().setName('shop').setDescription('🏪 Voir la boutique du serveur'),
+    new SlashCommandBuilder().setName('buy').setDescription('🛒 Acheter un article de la boutique')
         .addStringOption(o => o.setName('article').setDescription('Nom de l\'article').setRequired(true)),
-    new SlashCommandBuilder().setName('shop-add').setDescription('➕ Ajouter un article (Staff)')
-        .addStringOption(o => o.setName('nom').setDescription('Nom').setRequired(true))
+    new SlashCommandBuilder().setName('shop-add').setDescription('➕ Ajouter un article à la boutique (Staff)')
+        .addStringOption(o => o.setName('nom').setDescription('Nom de l\'article').setRequired(true))
         .addIntegerOption(o => o.setName('prix').setDescription('Prix en coins').setRequired(true).setMinValue(1))
         .addRoleOption(o => o.setName('role').setDescription('Rôle attribué').setRequired(true))
         .addStringOption(o => o.setName('description').setDescription('Description')),
-    new SlashCommandBuilder().setName('shop-remove').setDescription('🗑️ Retirer un article (Staff)')
-        .addStringOption(o => o.setName('nom').setDescription('Nom').setRequired(true)),
-    new SlashCommandBuilder().setName('coins-give').setDescription('💎 Donner des coins (Staff)')
+    new SlashCommandBuilder().setName('shop-remove').setDescription('🗑️ Retirer un article de la boutique (Staff)')
+        .addStringOption(o => o.setName('nom').setDescription('Nom de l\'article').setRequired(true)),
+    new SlashCommandBuilder().setName('coins-give').setDescription('💎 Donner des coins à un membre (Staff)')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
         .addIntegerOption(o => o.setName('montant').setDescription('Montant').setRequired(true).setMinValue(1)),
-    new SlashCommandBuilder().setName('coins-remove').setDescription('➖ Retirer des coins (Staff)')
-        .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true))
-        .addIntegerOption(o => o.setName('montant').setDescription('Montant').setRequired(true).setMinValue(1)),
-    new SlashCommandBuilder().setName('transactions').setDescription('📊 Voir les dernières transactions')
-        .addUserOption(o => o.setName('cible').setDescription('Membre (toi si vide)')),
 
-    // ── FACTURES ─────────────────────────────────────────────────────────
-    new SlashCommandBuilder().setName('facture').setDescription('🧾 Générer une facture professionnelle (TVA 20%)')
-        .addUserOption(o => o.setName('client').setDescription('Le client').setRequired(true))
-        .addNumberOption(o => o.setName('ht').setDescription('Prix HT (€)').setRequired(true))
-        .addStringOption(o => o.setName('objet').setDescription('Objet/description de la vente').setRequired(true))
-        .addStringOption(o => o.setName('numero').setDescription('N° facture (auto si vide)'))
-        .addStringOption(o => o.setName('notes').setDescription('Notes additionnelles')),
-    new SlashCommandBuilder().setName('facture-list').setDescription('📋 Liste des factures émises')
-        .addUserOption(o => o.setName('client').setDescription('Filtrer par client (optionnel)')),
-    new SlashCommandBuilder().setName('facture-voir').setDescription('🔍 Voir une facture par son numéro')
-        .addStringOption(o => o.setName('numero').setDescription('Numéro de facture').setRequired(true)),
-    new SlashCommandBuilder().setName('devis').setDescription('📄 Générer un devis (sans TVA enregistrée)')
-        .addUserOption(o => o.setName('client').setDescription('Le client').setRequired(true))
-        .addNumberOption(o => o.setName('ht').setDescription('Prix HT (€)').setRequired(true))
-        .addStringOption(o => o.setName('objet').setDescription('Objet du devis').setRequired(true))
-        .addIntegerOption(o => o.setName('validite').setDescription('Validité en jours (défaut: 30)').setMinValue(1).setMaxValue(365)),
-
-    // ── GIVEAWAY ─────────────────────────────────────────────────────────
+    // ── GIVEAWAY ─────────────────────────────
     new SlashCommandBuilder().setName('giveaway').setDescription('🎉 Lancer un giveaway')
-        .addStringOption(o => o.setName('prix').setDescription('Le lot').setRequired(true))
+        .addStringOption(o => o.setName('prix').setDescription('Ce qu\'on gagne').setRequired(true))
         .addIntegerOption(o => o.setName('duree').setDescription('Durée en minutes').setRequired(true).setMinValue(1))
         .addIntegerOption(o => o.setName('gagnants').setDescription('Nombre de gagnants').setRequired(true).setMinValue(1).setMaxValue(10))
-        .addChannelOption(o => o.setName('salon').setDescription('Salon (actuel si vide)'))
-        .addIntegerOption(o => o.setName('coins_requis').setDescription('Coins minimum pour participer (0 = pas de limite)').setMinValue(0)),
-    new SlashCommandBuilder().setName('giveaway-end').setDescription('⏹️ Terminer un giveaway')
-        .addStringOption(o => o.setName('message_id').setDescription('ID du message').setRequired(true)),
-    new SlashCommandBuilder().setName('giveaway-reroll').setDescription('🔄 Nouveau tirage')
-        .addStringOption(o => o.setName('message_id').setDescription('ID du message').setRequired(true)),
+        .addChannelOption(o => o.setName('salon').setDescription('Salon (actuel si non spécifié)')),
+    new SlashCommandBuilder().setName('giveaway-end').setDescription('⏹️ Terminer un giveaway immédiatement')
+        .addStringOption(o => o.setName('message_id').setDescription('ID du message du giveaway').setRequired(true)),
+    new SlashCommandBuilder().setName('giveaway-reroll').setDescription('🔄 Retirer un nouveau gagnant')
+        .addStringOption(o => o.setName('message_id').setDescription('ID du message du giveaway').setRequired(true)),
 
-    // ── SONDAGE ──────────────────────────────────────────────────────────
+    // ── SONDAGE ──────────────────────────────
     new SlashCommandBuilder().setName('poll').setDescription('📊 Créer un sondage')
         .addStringOption(o => o.setName('question').setDescription('La question').setRequired(true))
         .addStringOption(o => o.setName('option1').setDescription('Option 1').setRequired(true))
@@ -370,29 +205,32 @@ const commands = [
         .addStringOption(o => o.setName('option3').setDescription('Option 3'))
         .addStringOption(o => o.setName('option4').setDescription('Option 4')),
 
-    // ── TICKETS ──────────────────────────────────────────────────────────
+    // ── TICKETS ──────────────────────────────
     new SlashCommandBuilder().setName('ticket').setDescription('🎫 Ouvrir un ticket support'),
     new SlashCommandBuilder().setName('ticket-close').setDescription('🔒 Fermer ce ticket'),
     new SlashCommandBuilder().setName('ticket-add').setDescription('➕ Ajouter un membre au ticket')
         .addUserOption(o => o.setName('cible').setDescription('Membre').setRequired(true)),
-    new SlashCommandBuilder().setName('ticket-rename').setDescription('✏️ Renommer ce ticket')
-        .addStringOption(o => o.setName('nom').setDescription('Nouveau nom').setRequired(true)),
 
-    // ── BUSINESS ─────────────────────────────────────────────────────────
+    // ── IA & BUSINESS ────────────────────────
+    new SlashCommandBuilder().setName('ask').setDescription('🤖 Interroger l\'IA Paradise Overlord')
+        .addStringOption(o => o.setName('q').setDescription('Ta question').setRequired(true)),
+    new SlashCommandBuilder().setName('facture').setDescription('🧾 Générer une facture (TVA 20%)')
+        .addUserOption(o => o.setName('client').setDescription('Le client').setRequired(true))
+        .addNumberOption(o => o.setName('ht').setDescription('Prix HT').setRequired(true))
+        .addStringOption(o => o.setName('objet').setDescription('Objet de vente').setRequired(true))
+        .addStringOption(o => o.setName('numero').setDescription('Numéro de facture (auto si vide)')),
     new SlashCommandBuilder().setName('wl-start').setDescription('📝 Créer un salon de recrutement Staff')
         .addUserOption(o => o.setName('cible').setDescription('Candidat').setRequired(true)),
     new SlashCommandBuilder().setName('message').setDescription('📝 Créer un Embed stylisé'),
     new SlashCommandBuilder().setName('announce').setDescription('📢 Envoyer une annonce dans un salon')
-        .addStringOption(o => o.setName('texte').setDescription('Texte').setRequired(true))
+        .addStringOption(o => o.setName('texte').setDescription('Texte de l\'annonce').setRequired(true))
         .addChannelOption(o => o.setName('salon').setDescription('Salon cible').setRequired(true))
-        .addStringOption(o => o.setName('titre').setDescription('Titre'))
-        .addStringOption(o => o.setName('couleur').setDescription('Couleur HEX'))
-        .addBooleanOption(o => o.setName('mention').setDescription('@everyone ? (défaut: oui)')),
-    new SlashCommandBuilder().setName('rappel').setDescription('⏰ Créer un rappel')
-        .addIntegerOption(o => o.setName('minutes').setDescription('Dans combien de minutes ?').setRequired(true).setMinValue(1).setMaxValue(10080))
-        .addStringOption(o => o.setName('message').setDescription('Le rappel').setRequired(true)),
+        .addStringOption(o => o.setName('couleur').setDescription('Couleur HEX (ex: #ff0000)'))
+        .addStringOption(o => o.setName('titre').setDescription('Titre de l\'embed')),
 
-    // ── INFOS ────────────────────────────────────────────────────────────
+    // ── INFOS ────────────────────────────────
+    new SlashCommandBuilder().setName('stats').setDescription('📊 Casier judiciaire complet')
+        .addUserOption(o => o.setName('cible').setDescription('Membre')),
     new SlashCommandBuilder().setName('userinfo').setDescription('👤 Informations détaillées d\'un membre')
         .addUserOption(o => o.setName('cible').setDescription('Membre')),
     new SlashCommandBuilder().setName('server-info').setDescription('ℹ️ Informations du serveur'),
@@ -400,68 +238,43 @@ const commands = [
         .addUserOption(o => o.setName('cible').setDescription('Membre')),
     new SlashCommandBuilder().setName('ping').setDescription('🏓 Latence du bot'),
     new SlashCommandBuilder().setName('help').setDescription('📖 Liste complète des commandes'),
-
 ].map(c => c.toJSON());
 
 // ════════════════════════════════════════════
-//  5. MOTEUR IA (MISTRAL OFFICIEL)
+//  4. MOTEUR IA (MISTRAL via HuggingFace)
 // ════════════════════════════════════════════
-
-// Récupère le bon prompt selon le serveur et le mode actif
-function getAIPrompt(guildId) {
-    const srv = db.servers[guildId] || {};
-    const mode = srv.ai_mode || db.config.ai_mode || 'overlord';
-
-    if (mode === 'custom') {
-        return srv.ai_identity || db.config.ai_identity;
-    }
-
-    const modeData = AI_MODES[mode];
-    return modeData ? modeData.prompt : AI_MODES.overlord.prompt;
-}
-
-async function askMistral(question, guildId = null, systemOverride = null) {
-    const systemPrompt = systemOverride || getAIPrompt(guildId);
-
+async function askMistral(q) {
     try {
         const res = await axios.post(
             "https://api.mistral.ai/v1/chat/completions",
             {
-                model: "mistral-small-latest",
+                model: "mistral-small-latest", // gratuit
                 messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: question }
+                    { role: "system", content: db.config.ai_identity },
+                    { role: "user", content: q }
                 ],
-                max_tokens: 1000,
-                temperature: 0.7
+                max_tokens: 1000
             },
             {
                 headers: {
-                    Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
+                    Authorization: `Bearer ${process.env.HF_TOKEN}`,
                     "Content-Type": "application/json"
                 },
-                timeout: 20000
+                timeout: 15000
             }
         );
-
-        let text = res.data.choices[0].message.content.trim();
-        // Nettoyer les balises de réflexion
-        text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        text = text.replace(/\[INST\][\s\S]*?\[\/INST\]/gi, '').trim();
-        return text || "Analyse terminée.";
+        return res.data.choices[0].message.content.trim();
     } catch (e) {
-        if (e.response?.status === 429) return "⚠️ Trop de requêtes IA, réessaie dans quelques secondes.";
         return `⚠️ Liaison IA interrompue : ${e.message}`;
     }
 }
 
-// Salons avec mode conversation IA activé
-const AI_CONVERSATION_CHANNELS = new Set();
-
 // ════════════════════════════════════════════
-//  6. SYSTÈME XP
+//  5. SYSTÈME XP
 // ════════════════════════════════════════════
 const XP_COOLDOWNS = new Map();
+const XP_PER_MSG_MIN = 10;
+const XP_PER_MSG_MAX = 25;
 
 function calcXPforLevel(lvl) { return 100 * lvl * (lvl + 1); }
 
@@ -471,39 +284,43 @@ async function addXP(userId, guild) {
     XP_COOLDOWNS.set(userId, now);
 
     const u = initUser(userId);
-    const earned = Math.floor(Math.random() * 16) + 10; // 10-25 XP
+    const earned = Math.floor(Math.random() * (XP_PER_MSG_MAX - XP_PER_MSG_MIN + 1)) + XP_PER_MSG_MIN;
     u.xp += earned;
-    u.coins = (u.coins || 0) + 1;
-    u.messageCount = (u.messageCount || 0) + 1;
-    u.lastXP = now;
+    u.coins += 1; // 1 coin par message
 
+    // Vérifier le niveau up
     const neededXP = calcXPforLevel(u.level + 1);
     if (u.xp >= neededXP) {
         u.level++;
         save();
 
+        // Attribuer rôle si configuré
         const roleId = db.config.xp_roles[u.level];
         if (roleId) {
             const member = guild.members.cache.get(userId);
-            if (member) await member.roles.add(roleId).catch(() => {});
+            if (member) {
+                try {
+                    await member.roles.add(roleId);
+                } catch {}
+            }
         }
 
+        // Annoncer le level up dans les logs
         if (db.config.logs) {
             const logChan = guild.channels.cache.get(db.config.logs);
             if (logChan) {
                 const member = guild.members.cache.get(userId);
-                logChan.send({ embeds: [
-                    new EmbedBuilder()
-                        .setTitle("⬆️ LEVEL UP !")
-                        .setColor("#f39c12")
-                        .setImage(db.config.gifs.level)
-                        .setThumbnail(member?.displayAvatarURL() || null)
-                        .addFields(
-                            { name: "Membre", value: `<@${userId}>`, inline: true },
-                            { name: "Niveau", value: `**${u.level}**`, inline: true },
-                            { name: "XP Total", value: `\`${u.xp}\``, inline: true }
-                        ).setTimestamp()
-                ]}).catch(() => {});
+                const emb = new EmbedBuilder()
+                    .setTitle("⬆️ LEVEL UP")
+                    .setColor("#f39c12")
+                    .setImage(db.config.gifs.level)
+                    .addFields(
+                        { name: "Membre", value: `<@${userId}>`, inline: true },
+                        { name: "Nouveau niveau", value: `**${u.level}**`, inline: true },
+                        { name: "XP Total", value: `\`${u.xp}\``, inline: true }
+                    )
+                    .setThumbnail(member?.displayAvatarURL() || null);
+                logChan.send({ embeds: [emb] }).catch(() => {});
             }
         }
     }
@@ -511,7 +328,7 @@ async function addXP(userId, guild) {
 }
 
 // ════════════════════════════════════════════
-//  7. AUTO-MODÉRATION
+//  6. AUTO-MODÉRATION
 // ════════════════════════════════════════════
 const URL_REGEX = /(https?:\/\/[^\s]+)|(discord\.gg\/[^\s]+)/gi;
 
@@ -521,18 +338,13 @@ async function automod(message) {
     const content = message.content;
     const userId = message.author.id;
 
-    const sendWarning = async (text) => {
-        const msg = await message.channel.send(`> ⛔ <@${userId}>, ${text}`).catch(() => {});
-        if (msg) setTimeout(() => msg.delete().catch(() => {}), 5000);
-    };
-
     // Anti-liens
     if (cfg.anti_links && URL_REGEX.test(content)) {
-        const isStaffMember = db.config.staff_role && message.member.roles.cache.has(db.config.staff_role);
-        const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
-        if (!isStaffMember && !isAdmin) {
+        const hasStaffRole = db.config.staff_role && message.member.roles.cache.has(db.config.staff_role);
+        if (!hasStaffRole) {
             await message.delete().catch(() => {});
-            await sendWarning("les liens ne sont pas autorisés ici.");
+            const warn = await message.channel.send(`> ⛔ <@${userId}>, les liens sont interdits.`);
+            setTimeout(() => warn.delete().catch(() => {}), 5000);
             return;
         }
     }
@@ -541,29 +353,41 @@ async function automod(message) {
     for (const word of cfg.banned_words) {
         if (content.toLowerCase().includes(word.toLowerCase())) {
             await message.delete().catch(() => {});
-            await sendWarning("ce message contient un mot interdit.");
+            const warn = await message.channel.send(`> ⛔ <@${userId}>, ce message contient un mot interdit.`);
+            setTimeout(() => warn.delete().catch(() => {}), 5000);
             return;
         }
     }
 
-    // Anti-spam
+    // Anti-spam (plus de 5 messages en 5s)
     if (cfg.anti_spam) {
         const now = Date.now();
-        if (!db.spam_tracker[userId]) db.spam_tracker[userId] = { messages: [] };
+        if (!db.spam_tracker[userId]) db.spam_tracker[userId] = { count: 0, last: now, messages: [] };
         const tracker = db.spam_tracker[userId];
+
+        // Nettoyer les anciens messages (>5s)
         tracker.messages = tracker.messages.filter(t => now - t < 5000);
         tracker.messages.push(now);
 
         if (tracker.messages.length > 5) {
             await message.delete().catch(() => {});
-            await message.member.timeout(120000, "Auto-Mod : Spam").catch(() => {});
-            await sendWarning("tu as été automatiquement muté 2 minutes pour spam.");
-            await sendLog(message.guild, new EmbedBuilder()
-                .setTitle("🤖 AUTO-MOD : SPAM")
-                .setColor("#e74c3c")
-                .addFields({ name: "Membre", value: `<@${userId}>` }, { name: "Action", value: "Mute 2 minutes" })
-                .setTimestamp()
-            );
+            // Timeout automatique 2 minutes
+            await message.member.timeout(120000, "Auto-Mod : Spam détecté").catch(() => {});
+            const warn = await message.channel.send(`> 🤖 <@${userId}> a été automatiquement mute 2 minutes pour spam.`);
+            setTimeout(() => warn.delete().catch(() => {}), 8000);
+
+            // Log
+            if (db.config.logs) {
+                const logChan = message.guild.channels.cache.get(db.config.logs);
+                if (logChan) {
+                    const emb = new EmbedBuilder()
+                        .setTitle("🤖 AUTO-MOD : SPAM")
+                        .setColor("#e74c3c")
+                        .addFields({ name: "Membre", value: `<@${userId}>` }, { name: "Action", value: "Mute 2 minutes automatique" })
+                        .setTimestamp();
+                    logChan.send({ embeds: [emb] }).catch(() => {});
+                }
+            }
             tracker.messages = [];
         }
     }
@@ -571,44 +395,56 @@ async function automod(message) {
     // Anti-mentions excessives
     if (message.mentions.users.size >= cfg.max_mentions) {
         await message.delete().catch(() => {});
-        await sendWarning("trop de mentions dans un seul message.");
+        const warn = await message.channel.send(`> ⛔ <@${userId}>, trop de mentions dans un seul message.`);
+        setTimeout(() => warn.delete().catch(() => {}), 5000);
     }
 }
 
 // ════════════════════════════════════════════
-//  8. GIVEAWAYS
+//  7. SYSTÈME DE GIVEAWAY
 // ════════════════════════════════════════════
 async function endGiveaway(messageId, guild, reroll = false) {
     const ga = db.giveaways[messageId];
     if (!ga || (ga.ended && !reroll)) return;
 
-    const channel = await guild.channels.fetch(ga.channelId).catch(() => null);
+    const channel = guild.channels.cache.get(ga.channelId);
     if (!channel) return;
 
-    const participants = ga.participants.filter(Boolean);
+    const participants = ga.participants.filter(id => id);
     if (participants.length === 0) {
-        await channel.send("❌ Aucun participant pour ce giveaway.").catch(() => {});
-        ga.ended = true; save(); return;
+        channel.send("❌ Aucun participant pour ce giveaway. Personne ne gagne.").catch(() => {});
+        ga.ended = true; save();
+        return;
     }
 
     const winnersCount = Math.min(ga.winnersCount, participants.length);
-    const winners = [...participants].sort(() => Math.random() - 0.5).slice(0, winnersCount);
+    const shuffled = [...participants].sort(() => Math.random() - 0.5);
+    const winners = shuffled.slice(0, winnersCount);
 
     const emb = new EmbedBuilder()
-        .setTitle(reroll ? "🔄 REROLL" : "🎉 GIVEAWAY TERMINÉ !")
+        .setTitle(reroll ? "🔄 REROLL DU GIVEAWAY" : "🎉 GIVEAWAY TERMINÉ !")
         .setColor(reroll ? "#e67e22" : "#2ecc71")
         .addFields(
             { name: "🏆 Prix", value: ga.prize },
             { name: "👑 Gagnant(s)", value: winners.map(id => `<@${id}>`).join(", ") },
             { name: "👥 Participants", value: `${participants.length}` }
-        ).setTimestamp();
+        )
+        .setTimestamp();
 
-    await channel.send({ content: winners.map(id => `<@${id}>`).join(" ") + " 🎉 Vous avez gagné !", embeds: [emb] }).catch(() => {});
+    channel.send({ content: winners.map(id => `<@${id}>`).join(" ") + " **Vous avez gagné le giveaway !**", embeds: [emb] }).catch(() => {});
+    ga.ended = true;
+    ga.winners = winners;
+    save();
 
-    for (const wId of winners) { const u = initUser(wId); u.coins = (u.coins || 0) + 500; }
-    ga.ended = true; ga.winners = winners; save();
+    // Donner des coins aux gagnants
+    for (const wId of winners) {
+        const u = initUser(wId);
+        u.coins += 500;
+    }
+    save();
 }
 
+// Vérifier les giveaways expirés toutes les 30s
 setInterval(async () => {
     const now = Date.now();
     for (const [msgId, ga] of Object.entries(db.giveaways)) {
@@ -621,7 +457,7 @@ setInterval(async () => {
 }, 30000);
 
 // ════════════════════════════════════════════
-//  9. UTILITAIRES
+//  8. HELPERS UTILITAIRES
 // ════════════════════════════════════════════
 function isStaff(member) {
     if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
@@ -629,45 +465,38 @@ function isStaff(member) {
     return false;
 }
 
-function isOwner(userId) {
-    return userId === (db.config.owner_id || process.env.1404076132890050571);
+function colorFromHex(hex) {
+    if (!hex) return "#5865F2";
+    return hex.startsWith("#") ? hex : `#${hex}`;
+}
+
+function randomId() {
+    return Math.floor(Math.random() * 900000 + 100000).toString();
 }
 
 async function sendLog(guild, embed) {
     if (!db.config.logs) return;
-    const logChan = await guild.channels.fetch(db.config.logs).catch(() => null);
-    if (logChan?.isTextBased()) await logChan.send({ embeds: [embed] }).catch(() => {});
-}
-
-function formatDate(ts) {
-    return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const logChan = guild.channels.cache.get(db.config.logs);
+    if (logChan) await logChan.send({ embeds: [embed] }).catch(() => {});
 }
 
 // ════════════════════════════════════════════
-//  10. GESTIONNAIRE D'INTERACTIONS
+//  9. GESTIONNAIRE D'INTERACTIONS PRINCIPAL
 // ════════════════════════════════════════════
 client.on(Events.InteractionCreate, async i => {
-
-    // ── BOUTONS ─────────────────────────────
+    // ── BOUTONS ──────────────────────────────
     if (i.isButton()) {
-        // Giveaway
+        // Bouton participation giveaway
         if (i.customId.startsWith('ga_join_')) {
             const msgId = i.customId.replace('ga_join_', '');
             const ga = db.giveaways[msgId];
             if (!ga || ga.ended) return i.reply({ content: "❌ Ce giveaway est terminé.", ephemeral: true });
 
-            // Vérifier coins requis
-            if (ga.coins_requis > 0) {
-                const u = initUser(i.user.id);
-                if ((u.coins || 0) < ga.coins_requis) {
-                    return i.reply({ content: `❌ Tu as besoin d'au moins **${ga.coins_requis} coins** pour participer.`, ephemeral: true });
-                }
-            }
-
             if (ga.participants.includes(i.user.id)) {
+                // Se retirer
                 ga.participants = ga.participants.filter(id => id !== i.user.id);
                 save();
-                return i.reply({ content: `👋 Tu t'es retiré du giveaway. (${ga.participants.length} participants)`, ephemeral: true });
+                return i.reply({ content: "👋 Tu t'es retiré du giveaway.", ephemeral: true });
             } else {
                 ga.participants.push(i.user.id);
                 save();
@@ -675,107 +504,53 @@ client.on(Events.InteractionCreate, async i => {
             }
         }
 
-        // Sondage
+        // Boutons sondage
         if (i.customId.startsWith('poll_')) {
-            const parts = i.customId.split('_');
-            const msgId = parts[1];
-            const optIdx = parseInt(parts[2]);
+            const [, msgId, optIdx] = i.customId.split('_');
             const poll = db.polls[msgId];
             if (!poll) return i.reply({ content: "❌ Sondage introuvable.", ephemeral: true });
 
-            poll.votes[i.user.id] = optIdx;
+            poll.votes[i.user.id] = parseInt(optIdx);
             save();
 
-            const totals = poll.options.map((_, idx) => Object.values(poll.votes).filter(v => v === idx).length);
+            // Recalculer les stats
+            const totals = poll.options.map((_, idx) =>
+                Object.values(poll.votes).filter(v => v === idx).length
+            );
             const total = totals.reduce((a, b) => a + b, 0);
             const bars = totals.map((count, idx) => {
                 const pct = total ? Math.round((count / total) * 100) : 0;
-                const filled = Math.floor(pct / 10);
-                return `**${poll.options[idx]}**\n\`${"█".repeat(filled)}${"░".repeat(10 - filled)}\` ${pct}% *(${count} vote${count !== 1 ? 's' : ''})*`;
+                const bar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+                return `**${poll.options[idx]}**\n\`${bar}\` ${pct}% (${count})`;
             });
 
-            await i.update({ embeds: [
-                new EmbedBuilder()
-                    .setTitle(`📊 ${poll.question}`)
-                    .setColor("#3498db")
-                    .setDescription(bars.join("\n\n"))
-                    .setFooter({ text: `${total} vote(s) au total` })
-            ]}).catch(() => {});
+            const emb = new EmbedBuilder()
+                .setTitle(`📊 ${poll.question}`)
+                .setColor("#3498db")
+                .setDescription(bars.join("\n\n"))
+                .setFooter({ text: `${total} vote(s) au total` });
+
+            await i.update({ embeds: [emb] }).catch(() => {});
         }
 
         // Fermer ticket
         if (i.customId.startsWith('ticket_close_')) {
             const ticket = db.tickets[i.channel.id];
-            if (!ticket) return i.reply({ content: "❌ Pas un ticket.", ephemeral: true });
-            if (!isStaff(i.member) && ticket.userId !== i.user.id) return i.reply({ content: "❌ Permission refusée.", ephemeral: true });
+            if (!ticket) return i.reply({ content: "❌ Ce n'est pas un ticket.", ephemeral: true });
 
             ticket.closed = true; save();
-            await i.reply({ content: "🔒 Ticket fermé. Suppression dans 10 secondes." });
+            await i.reply({ content: "🔒 Ticket fermé. Ce salon sera supprimé dans 10 secondes." });
             await sendLog(i.guild, new EmbedBuilder()
                 .setTitle("🎫 TICKET FERMÉ")
                 .setColor("#e74c3c")
                 .addFields(
                     { name: "Ticket", value: `#${i.channel.name}` },
-                    { name: "Fermé par", value: i.user.tag },
+                    { name: "Fermé par", value: `${i.user.tag}` },
                     { name: "Ouvert par", value: `<@${ticket.userId}>` }
-                ).setTimestamp()
+                )
+                .setTimestamp()
             );
             setTimeout(() => i.channel.delete().catch(() => {}), 10000);
-        }
-
-        // Voir warns (bouton dans /stats)
-        if (i.customId.startsWith('warns_detail_')) {
-            const targetId = i.customId.replace('warns_detail_', '');
-            const u = initUser(targetId);
-            if (!u.warnReasons || u.warnReasons.length === 0) {
-                return i.reply({ content: "✅ Aucun avertissement enregistré.", ephemeral: true });
-            }
-            const lines = u.warnReasons.map((w, idx) =>
-                `**#${idx + 1}** — ${w.raison}\n> Par : ${w.by} | ${w.at ? formatDate(w.at) : 'Date inconnue'}`
-            ).join("\n\n");
-            return i.reply({ embeds: [
-                new EmbedBuilder()
-                    .setTitle(`📋 Détail des avertissements`)
-                    .setColor("#f1c40f")
-                    .setDescription(lines.slice(0, 4096))
-                    .setFooter({ text: `${u.warnReasons.length} avertissement(s) au total` })
-            ], ephemeral: true });
-        }
-
-        // Voir bans history
-        if (i.customId.startsWith('bans_detail_')) {
-            const targetId = i.customId.replace('bans_detail_', '');
-            const u = initUser(targetId);
-            if (!u.banReasons || u.banReasons.length === 0) {
-                return i.reply({ content: "✅ Aucun ban enregistré.", ephemeral: true });
-            }
-            const lines = u.banReasons.map((b, idx) =>
-                `**#${idx + 1}** — ${b.raison}\n> Par : ${b.by} | ${b.at ? formatDate(b.at) : 'Date inconnue'}`
-            ).join("\n\n");
-            return i.reply({ embeds: [
-                new EmbedBuilder()
-                    .setTitle(`🔨 Historique des bans`)
-                    .setColor("#e74c3c")
-                    .setDescription(lines.slice(0, 4096))
-            ], ephemeral: true });
-        }
-
-        // Voir mutes history
-        if (i.customId.startsWith('mutes_detail_')) {
-            const targetId = i.customId.replace('mutes_detail_', '');
-            const u = initUser(targetId);
-            if (!u.muteHistory || u.muteHistory.length === 0) {
-                return i.reply({ content: "✅ Aucun mute enregistré.", ephemeral: true });
-            }
-            const lines = u.muteHistory.map((m, idx) =>
-                `**#${idx + 1}** — ${m.raison}\n> Par : ${m.by} | Durée : ${m.duration}min | ${m.at ? formatDate(m.at) : 'Date inconnue'}`
-            ).join("\n\n");
-            return i.reply({ embeds: [
-                new EmbedBuilder()
-                    .setTitle(`🔇 Historique des mutes`)
-                    .setColor("#f1c40f")
-                    .setDescription(lines.slice(0, 4096))
-            ], ephemeral: true });
         }
     }
 
@@ -793,7 +568,12 @@ client.on(Events.InteractionCreate, async i => {
                 .setColor(couleur.startsWith('#') ? couleur : `#${couleur}`)
                 .setTimestamp();
             if (image) emb.setImage(image);
-            return i.reply({ embeds: [emb] });
+
+            await i.reply({ embeds: [emb] });
+        }
+
+        if (i.customId === 'modal_wl') {
+            const candidat_id = i.customId.split('_')[2];
         }
     }
 
@@ -815,31 +595,31 @@ client.on(Events.InteractionCreate, async i => {
     await i.deferReply().catch(() => {});
     const { commandName, options, guild, member, user } = i;
 
-    // ════════════ SETUPS ════════════════════════════════════════════════
+    // ════════════ SETUPS ════════════
     if (commandName === 'setup-logs') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         db.config.logs = options.getChannel('salon').id; save();
-        return i.editReply(`✅ Logs → <#${db.config.logs}>`);
+        return i.editReply(`✅ Salon des logs défini : <#${db.config.logs}>`);
     }
     if (commandName === 'setup-welcome') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         db.config.welcome = options.getChannel('salon').id; save();
-        return i.editReply(`✅ Bienvenue → <#${db.config.welcome}>`);
+        return i.editReply(`✅ Salon de bienvenue défini : <#${db.config.welcome}>`);
     }
     if (commandName === 'setup-blacklist') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         db.config.bl_chan = options.getChannel('salon').id; save();
-        return i.editReply(`✅ Blacklist → <#${db.config.bl_chan}>`);
+        return i.editReply(`✅ Salon Blacklist défini : <#${db.config.bl_chan}>`);
     }
     if (commandName === 'setup-whitelist') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         db.config.wl_cat = options.getChannel('cat').id; save();
-        return i.editReply(`✅ Catégorie WL définie.`);
+        return i.editReply(`✅ Catégorie Whitelist définie : <#${db.config.wl_cat}>`);
     }
     if (commandName === 'setup-staff') {
         if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) return i.editReply("❌ Administrateur requis.");
         db.config.staff_role = options.getRole('role').id; save();
-        return i.editReply(`✅ Rôle Staff → <@&${db.config.staff_role}>`);
+        return i.editReply(`✅ Rôle Staff défini : <@&${db.config.staff_role}>`);
     }
     if (commandName === 'setup-tickets') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
@@ -849,7 +629,7 @@ client.on(Events.InteractionCreate, async i => {
     if (commandName === 'setup-muted') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         db.config.muted_role = options.getRole('role').id; save();
-        return i.editReply(`✅ Rôle Muted → <@&${db.config.muted_role}>`);
+        return i.editReply(`✅ Rôle Muted défini : <@&${db.config.muted_role}>`);
     }
     if (commandName === 'setup-gif') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
@@ -857,161 +637,60 @@ client.on(Events.InteractionCreate, async i => {
         db.config.gifs[type] = options.getString('url'); save();
         return i.editReply({ embeds: [new EmbedBuilder().setTitle(`✅ GIF ${type.toUpperCase()} mis à jour`).setImage(db.config.gifs[type]).setColor("#2ecc71")] });
     }
+    if (commandName === 'setup-ai') {
+        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
+        db.config.ai_identity = options.getString('identite'); save();
+        return i.editReply(`✅ Identité IA mise à jour.`);
+    }
     if (commandName === 'setup-xp-role') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        db.config.xp_roles[options.getInteger('niveau')] = options.getRole('role').id; save();
-        return i.editReply(`✅ Niveau **${options.getInteger('niveau')}** → <@&${options.getRole('role').id}>`);
+        const lvl = options.getInteger('niveau');
+        const role = options.getRole('role');
+        db.config.xp_roles[lvl] = role.id; save();
+        return i.editReply(`✅ Niveau **${lvl}** → rôle <@&${role.id}>.`);
     }
 
-    // ════════════ IA ════════════════════════════════════════════════════
-    if (commandName === 'ia-mode') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const mode = options.getString('mode');
-        const portee = options.getString('portee');
-
-        if (portee === 'global') {
-            if (!isOwner(user.id)) return i.editReply("❌ Seul le propriétaire du bot peut modifier le mode global.");
-            db.config.ai_mode = mode; save();
-            return i.editReply(`✅ Mode IA **global** → **${AI_MODES[mode]?.name || mode}**`);
-        } else {
-            const srv = initServer(guild.id);
-            srv.ai_mode = mode; save();
-            return i.editReply(`✅ Mode IA **ce serveur** → **${AI_MODES[mode]?.name || mode}**`);
-        }
-    }
-
-    if (commandName === 'ia-prompt') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const prompt = options.getString('prompt');
-        const portee = options.getString('portee');
-
-        if (portee === 'global') {
-            if (!isOwner(user.id)) return i.editReply("❌ Seul le propriétaire du bot peut modifier le prompt global.");
-            db.config.ai_identity = prompt;
-            db.config.ai_mode = 'custom'; save();
-            return i.editReply(`✅ Prompt global mis à jour. Mode → Custom`);
-        } else {
-            const srv = initServer(guild.id);
-            srv.ai_identity = prompt;
-            srv.ai_mode = 'custom'; save();
-            return i.editReply(`✅ Prompt de ce serveur mis à jour. Mode → Custom`);
-        }
-    }
-
-    if (commandName === 'ia-info') {
-        const srv = db.servers[guild.id] || {};
-        const mode = srv.ai_mode || db.config.ai_mode || 'overlord';
-        const modeData = AI_MODES[mode] || AI_MODES.overlord;
-        const prompt = getAIPrompt(guild.id);
-        const emb = new EmbedBuilder()
-            .setTitle("🧠 CONFIGURATION IA")
-            .setColor("#9b59b6")
-            .addFields(
-                { name: "🌍 Mode global", value: AI_MODES[db.config.ai_mode]?.name || db.config.ai_mode, inline: true },
-                { name: "🏠 Mode ce serveur", value: srv.ai_mode ? (AI_MODES[srv.ai_mode]?.name || srv.ai_mode) : "*(hérite du global)*", inline: true },
-                { name: "✅ Mode actif", value: modeData.name, inline: true },
-                { name: "📝 Prompt actif", value: `\`\`\`${prompt.slice(0, 300)}${prompt.length > 300 ? '...' : ''}\`\`\`` }
-            );
-        return i.editReply({ embeds: [emb] });
-    }
-
-    if (commandName === 'ia-conversation') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const activer = options.getBoolean('activer');
-        if (activer) {
-            AI_CONVERSATION_CHANNELS.add(i.channel.id);
-            return i.editReply("🤖 Mode conversation IA activé dans ce salon. Je répondrai à chaque message.");
-        } else {
-            AI_CONVERSATION_CHANNELS.delete(i.channel.id);
-            return i.editReply("🔕 Mode conversation IA désactivé.");
-        }
-    }
-
-    if (commandName === 'ask') {
-        await i.editReply("🤖 Analyse en cours...");
-        const rep = await askMistral(options.getString('q'), guild.id);
-        const mode = db.servers[guild.id]?.ai_mode || db.config.ai_mode || 'overlord';
-        return i.editReply(`**${AI_MODES[mode]?.name || '🤖 IA'} :**\n${rep}`);
-    }
-
-    if (commandName === 'resume') {
-        await i.editReply("📝 Résumé en cours...");
-        const rep = await askMistral(
-            `Résume ce texte de façon claire et concise en français :\n\n${options.getString('texte')}`,
-            guild.id,
-            "Tu es un assistant spécialisé dans la synthèse de textes. Sois concis et clair. Réponds en français."
-        );
-        return i.editReply({ embeds: [new EmbedBuilder().setTitle("📝 RÉSUMÉ IA").setColor("#3498db").setDescription(rep.slice(0, 4096)).setTimestamp()] });
-    }
-
-    if (commandName === 'traduit') {
-        await i.editReply("🌍 Traduction en cours...");
-        const rep = await askMistral(
-            `Traduis ce texte en ${options.getString('langue')} :\n\n${options.getString('texte')}`,
-            guild.id,
-            "Tu es un traducteur expert. Donne uniquement la traduction, sans commentaire ni explication."
-        );
-        return i.editReply({ embeds: [new EmbedBuilder().setTitle(`🌍 TRADUCTION → ${options.getString('langue').toUpperCase()}`).setColor("#2ecc71").setDescription(rep.slice(0, 4096)).setTimestamp()] });
-    }
-
-    if (commandName === 'corrige') {
-        await i.editReply("✍️ Correction en cours...");
-        const rep = await askMistral(
-            `Corrige l'orthographe et la grammaire de ce texte et donne uniquement la version corrigée :\n\n${options.getString('texte')}`,
-            guild.id,
-            "Tu es un correcteur orthographique expert en français. Donne uniquement le texte corrigé, sans commentaire."
-        );
-        return i.editReply({ embeds: [new EmbedBuilder().setTitle("✍️ TEXTE CORRIGÉ").setColor("#e74c3c").setDescription(rep.slice(0, 4096)).setTimestamp()] });
-    }
-
-    // ════════════ AUTO-MOD ══════════════════════════════════════════════
+    // ════════════ AUTO-MOD ════════════
     if (commandName === 'automod') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const opt = options.getString('option');
         const val = options.getString('valeur') || '';
         const cfg = db.config.automod;
 
-        if (opt === 'view') {
-            return i.editReply({ embeds: [new EmbedBuilder()
-                .setTitle("🛡️ CONFIG AUTO-MOD")
-                .setColor("#3498db")
-                .addFields(
-                    { name: "Anti-spam", value: cfg.anti_spam ? "✅ ON" : "❌ OFF", inline: true },
-                    { name: "Anti-liens", value: cfg.anti_links ? "✅ ON" : "❌ OFF", inline: true },
-                    { name: "Max mentions", value: `${cfg.max_mentions}`, inline: true },
-                    { name: "Mots bannis", value: cfg.banned_words.length > 0 ? cfg.banned_words.map(w => `\`${w}\``).join(", ") : "Aucun" }
-                )
-            ]});
-        }
-        if (opt === 'spam') { cfg.anti_spam = !cfg.anti_spam; save(); return i.editReply(`🛡️ Anti-spam : **${cfg.anti_spam ? 'ON ✅' : 'OFF ❌'}**`); }
-        if (opt === 'links') { cfg.anti_links = !cfg.anti_links; save(); return i.editReply(`🔗 Anti-liens : **${cfg.anti_links ? 'ON ✅' : 'OFF ❌'}**`); }
+        if (opt === 'spam') { cfg.anti_spam = !cfg.anti_spam; save(); return i.editReply(`🛡️ Anti-spam : **${cfg.anti_spam ? 'ON' : 'OFF'}**`); }
+        if (opt === 'links') { cfg.anti_links = !cfg.anti_links; save(); return i.editReply(`🔗 Anti-liens : **${cfg.anti_links ? 'ON' : 'OFF'}**`); }
         if (opt === 'add_word') { if (!val) return i.editReply("❌ Précise un mot."); cfg.banned_words.push(val.toLowerCase()); save(); return i.editReply(`✅ Mot banni ajouté : \`${val}\``); }
         if (opt === 'del_word') { cfg.banned_words = cfg.banned_words.filter(w => w !== val.toLowerCase()); save(); return i.editReply(`✅ Mot retiré : \`${val}\``); }
         if (opt === 'mentions') { const n = parseInt(val); if (isNaN(n)) return i.editReply("❌ Valeur invalide."); cfg.max_mentions = n; save(); return i.editReply(`✅ Max mentions : **${n}**`); }
     }
 
-    // ════════════ MODÉRATION ════════════════════════════════════════════
+    // ════════════ MODÉRATION ════════════
     if (commandName === 'ban') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const target = options.getUser('cible');
         const raison = options.getString('raison');
         const silent = options.getBoolean('silent') || false;
         const u = initUser(target.id);
-        u.bans++;
-        u.banReasons.push({ raison, by: user.tag, byId: user.id, at: Date.now() });
-        save();
+        u.bans++; save();
 
-        try { await target.send({ embeds: [new EmbedBuilder().setTitle("🔨 Tu as été banni").setColor("#ff0000").addFields({ name: "Serveur", value: guild.name }, { name: "Raison", value: raison }).setTimestamp()] }); } catch {}
+        // DM la cible
+        try {
+            const dmEmb = new EmbedBuilder().setTitle("🔨 Tu as été banni").setColor("#ff0000")
+                .addFields({ name: "Serveur", value: guild.name }, { name: "Raison", value: raison })
+                .setTimestamp();
+            await target.send({ embeds: [dmEmb] });
+        } catch {}
+
         await guild.members.ban(target.id, { reason: raison, deleteMessageSeconds: 86400 }).catch(() => {});
-
         const emb = new EmbedBuilder().setTitle("🔨 BAN EXÉCUTÉ").setColor("#ff0000")
             .setImage(silent ? null : db.config.gifs.ban)
             .addFields(
                 { name: "🎯 Sujet", value: `${target.tag} (${target.id})`, inline: true },
-                { name: "👮 Staff", value: user.tag, inline: true },
+                { name: "👮 Staff", value: `${user.tag}`, inline: true },
                 { name: "📋 Raison", value: raison },
                 { name: "📊 Total bans", value: `\`${u.bans}\`` }
             ).setTimestamp();
+
         await sendLog(guild, emb);
         return i.editReply({ embeds: [emb] });
     }
@@ -1022,7 +701,7 @@ client.on(Events.InteractionCreate, async i => {
         const raison = options.getString('raison');
         try { await target.send({ embeds: [new EmbedBuilder().setTitle("👢 Tu as été expulsé").setColor("#e67e22").addFields({ name: "Serveur", value: guild.name }, { name: "Raison", value: raison })] }); } catch {}
         await target.kick(raison).catch(() => {});
-        const emb = new EmbedBuilder().setTitle("👢 KICK").setColor("#e67e22").addFields({ name: "Sujet", value: target.user.tag }, { name: "Raison", value: raison }, { name: "Staff", value: user.tag }).setTimestamp();
+        const emb = new EmbedBuilder().setTitle("👢 KICK").setColor("#e67e22").addFields({ name: "Sujet", value: `${target.user.tag}` }, { name: "Raison", value: raison }, { name: "Staff", value: user.tag }).setTimestamp();
         await sendLog(guild, emb);
         return i.editReply({ embeds: [emb] });
     }
@@ -1033,9 +712,7 @@ client.on(Events.InteractionCreate, async i => {
         const mins = options.getInteger('minutes');
         const raison = options.getString('raison');
         const u = initUser(target.id);
-        u.mutes++;
-        u.muteHistory.push({ raison, by: user.tag, duration: mins, at: Date.now() });
-        save();
+        u.mutes++; save();
         await target.timeout(mins * 60000, raison);
         const emb = new EmbedBuilder().setTitle("🔇 MUTE").setColor("#f1c40f")
             .setImage(db.config.gifs.mute)
@@ -1053,7 +730,9 @@ client.on(Events.InteractionCreate, async i => {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const target = options.getMember('cible');
         await target.timeout(null);
-        return i.editReply({ embeds: [new EmbedBuilder().setTitle("🔊 UNMUTE").setColor("#2ecc71").addFields({ name: "Sujet", value: `${target}` }).setTimestamp()] });
+        const emb = new EmbedBuilder().setTitle("🔊 UNMUTE").setColor("#2ecc71").addFields({ name: "Sujet", value: `${target}` }).setTimestamp();
+        await sendLog(guild, emb);
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'warn') {
@@ -1062,13 +741,18 @@ client.on(Events.InteractionCreate, async i => {
         const raison = options.getString('raison');
         const u = initUser(target.id);
         u.warns++;
-        u.warnReasons.push({ raison, by: user.tag, byId: user.id, at: Date.now() });
+        if (!u.warnReasons) u.warnReasons = [];
+        u.warnReasons.push({ raison, by: user.tag, at: new Date().toISOString() });
         save();
-        try { await target.send({ embeds: [new EmbedBuilder().setTitle("⚠️ Avertissement reçu").setColor("#f1c40f").addFields({ name: "Raison", value: raison }, { name: "Total warns", value: `${u.warns}` }).setTimestamp()] }); } catch {}
+
+        try {
+            await target.send({ embeds: [new EmbedBuilder().setTitle("⚠️ Avertissement reçu").setColor("#f1c40f").addFields({ name: "Raison", value: raison }, { name: "Total warns", value: `${u.warns}` })] });
+        } catch {}
+
         const emb = new EmbedBuilder().setTitle("⚠️ WARN").setColor("#f1c40f")
             .setImage(db.config.gifs.warn)
             .addFields(
-                { name: "🎯 Sujet", value: target.tag, inline: true },
+                { name: "🎯 Sujet", value: `${target.tag}`, inline: true },
                 { name: "👮 Staff", value: user.tag, inline: true },
                 { name: "📋 Raison", value: raison },
                 { name: "📊 Total warns", value: `\`${u.warns}\`` }
@@ -1082,7 +766,7 @@ client.on(Events.InteractionCreate, async i => {
         const target = options.getUser('cible');
         const u = initUser(target.id);
         if (u.warns > 0) { u.warns--; u.warnReasons?.pop(); save(); }
-        return i.editReply(`✅ Dernier warn retiré de **${target.tag}**. (Warns restants : ${u.warns})`);
+        return i.editReply(`✅ Dernier avertissement retiré de **${target.tag}**. (Warns : ${u.warns})`);
     }
 
     if (commandName === 'clear') {
@@ -1092,7 +776,7 @@ client.on(Events.InteractionCreate, async i => {
         let messages = await i.channel.messages.fetch({ limit: filterUser ? 100 : nb });
         if (filterUser) messages = messages.filter(m => m.author.id === filterUser.id).first(nb);
         const deleted = await i.channel.bulkDelete(messages, true).catch(() => new Collection());
-        return i.editReply(`🧹 **${deleted.size}** message(s) supprimé(s).`);
+        return i.editReply({ content: `🧹 **${deleted.size}** message(s) supprimé(s).`, embeds: [] });
     }
 
     if (commandName === 'bl') {
@@ -1101,10 +785,19 @@ client.on(Events.InteractionCreate, async i => {
         const raison = options.getString('raison');
         const u = initUser(target.id);
         u.blacklisted = true; save();
-        if (db.config.bl_chan) await target.roles.set([]).catch(() => {});
+
+        // Retirer tous les rôles et ajouter au salon de quarantaine
+        if (db.config.bl_chan) {
+            const blChan = guild.channels.cache.get(db.config.bl_chan);
+            if (blChan) {
+                // Retirer la permission de parler partout et forcer dans bl_chan
+                await target.roles.set([]).catch(() => {});
+            }
+        }
+
         const emb = new EmbedBuilder().setTitle("🚫 BLACKLIST").setColor("#8e44ad")
             .setImage(db.config.gifs.bl)
-            .addFields({ name: "🎯 Sujet", value: target.user.tag }, { name: "📋 Raison", value: raison }, { name: "👮 Staff", value: user.tag })
+            .addFields({ name: "🎯 Sujet", value: `${target.user.tag}` }, { name: "📋 Raison", value: raison }, { name: "👮 Staff", value: user.tag })
             .setTimestamp();
         await sendLog(guild, emb);
         return i.editReply({ embeds: [emb] });
@@ -1137,166 +830,70 @@ client.on(Events.InteractionCreate, async i => {
         return i.editReply("🔓 Salon déverrouillé.");
     }
 
-    if (commandName === 'role-give') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getMember('cible');
-        const role = options.getRole('role');
-        await target.roles.add(role.id).catch(() => {});
-        return i.editReply(`✅ Rôle <@&${role.id}> donné à <@${target.id}>.`);
-    }
-
-    if (commandName === 'role-remove') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getMember('cible');
-        const role = options.getRole('role');
-        await target.roles.remove(role.id).catch(() => {});
-        return i.editReply(`✅ Rôle <@&${role.id}> retiré de <@${target.id}>.`);
-    }
-
-    // ════════════ CASIER JUDICIAIRE ═════════════════════════════════════
-    if (commandName === 'stats') {
-        const target = options.getUser('cible') || user;
-        const u = initUser(target.id);
-
-        const lastWarn = u.warnReasons?.slice(-1)[0];
-        const lastBan = u.banReasons?.slice(-1)[0];
-        const lastMute = u.muteHistory?.slice(-1)[0];
-
-        const emb = new EmbedBuilder()
-            .setTitle(`📊 CASIER : ${target.username.toUpperCase()}`)
-            .setColor(u.blacklisted ? "#8e44ad" : u.warns >= 3 ? "#e74c3c" : "#2b2d31")
-            .setThumbnail(target.displayAvatarURL({ size: 256 }))
-            .addFields(
-                { name: "🔨 Bans", value: `\`${u.bans}\``, inline: true },
-                { name: "🔇 Mutes", value: `\`${u.mutes}\``, inline: true },
-                { name: "⚠️ Warns", value: `\`${u.warns}\``, inline: true },
-                { name: "🚫 Blacklisté", value: u.blacklisted ? "**OUI ⛔**" : "Non ✅", inline: true },
-                { name: "⭐ XP / Niveau", value: `${u.xp || 0} XP — Niv. ${u.level || 0}`, inline: true },
-                { name: "💰 Coins", value: `${u.coins || 0}`, inline: true },
-                { name: "💬 Messages envoyés", value: `${u.messageCount || 0}`, inline: true },
-                { name: "📅 Dernier warn", value: lastWarn ? `${lastWarn.raison} *(${lastWarn.by})*` : "Aucun", inline: false },
-                { name: "🔨 Dernier ban", value: lastBan ? `${lastBan.raison} *(${lastBan.by})*` : "Aucun", inline: true },
-                { name: "🔇 Dernier mute", value: lastMute ? `${lastMute.raison} — ${lastMute.duration}min` : "Aucun", inline: true }
-            )
-            .setFooter({ text: `ID: ${target.id}` })
-            .setTimestamp();
-
-        // Boutons détail
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`warns_detail_${target.id}`).setLabel(`⚠️ Voir ${u.warns} warn(s)`).setStyle(ButtonStyle.Secondary).setDisabled(u.warns === 0),
-            new ButtonBuilder().setCustomId(`bans_detail_${target.id}`).setLabel(`🔨 Voir ${u.bans} ban(s)`).setStyle(ButtonStyle.Danger).setDisabled(u.bans === 0),
-            new ButtonBuilder().setCustomId(`mutes_detail_${target.id}`).setLabel(`🔇 Voir ${u.mutes} mute(s)`).setStyle(ButtonStyle.Primary).setDisabled(u.mutes === 0)
-        );
-
-        return i.editReply({ embeds: [emb], components: [row] });
-    }
-
-    if (commandName === 'warns-list') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getUser('cible');
-        const u = initUser(target.id);
-        if (!u.warnReasons || u.warnReasons.length === 0) return i.editReply(`✅ **${target.tag}** n'a aucun avertissement.`);
-
-        const lines = u.warnReasons.map((w, idx) =>
-            `**#${idx + 1}** — ${w.raison}\n> 👮 Par : **${w.by}** | 📅 ${w.at ? formatDate(w.at) : 'Date inconnue'}`
-        ).join("\n\n");
-
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle(`📋 Avertissements de ${target.username}`)
-            .setColor("#f1c40f")
-            .setDescription(lines.slice(0, 4096))
-            .setFooter({ text: `${u.warnReasons.length} avertissement(s) au total` })
-            .setThumbnail(target.displayAvatarURL())
-        ]});
-    }
-
-    if (commandName === 'casier-reset') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getUser('cible');
-        const type = options.getString('type');
-        const u = initUser(target.id);
-
-        if (type === 'all' || type === 'warns') { u.warns = 0; u.warnReasons = []; }
-        if (type === 'all' || type === 'mutes') { u.mutes = 0; u.muteHistory = []; }
-        if (type === 'all' || type === 'bans') { u.bans = 0; u.banReasons = []; }
-        save();
-        return i.editReply(`✅ Casier de **${target.tag}** réinitialisé (${type}).`);
-    }
-
-    // ════════════ XP ════════════════════════════════════════════════════
+    // ════════════ XP ════════════
     if (commandName === 'rank') {
         const target = options.getUser('cible') || user;
         const u = initUser(target.id);
         const nextXP = calcXPforLevel(u.level + 1);
-        const pct = Math.min(Math.round((u.xp / nextXP) * 100), 100);
-        const filled = Math.floor(pct / 5);
-        const bar = "█".repeat(filled) + "░".repeat(20 - filled);
+        const pct = Math.round((u.xp / nextXP) * 100);
+        const bar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
 
-        return i.editReply({ embeds: [new EmbedBuilder()
+        const emb = new EmbedBuilder()
             .setTitle(`🏅 RANG : ${target.username.toUpperCase()}`)
             .setColor("#f39c12")
             .setThumbnail(target.displayAvatarURL())
             .addFields(
                 { name: "📈 Niveau", value: `**${u.level}**`, inline: true },
                 { name: "⭐ XP", value: `${u.xp} / ${nextXP}`, inline: true },
-                { name: "💰 Coins", value: `${u.coins || 0}`, inline: true },
-                { name: "💬 Messages", value: `${u.messageCount || 0}`, inline: true },
-                { name: "📊 Progression", value: `\`${bar}\` **${pct}%**` }
-            ).setTimestamp()
-        ]});
+                { name: "💰 Coins", value: `${u.coins}`, inline: true },
+                { name: "📊 Progression", value: `\`${bar}\` ${pct}%` }
+            ).setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'leaderboard') {
         const sorted = Object.entries(db.users)
-            .filter(([, u]) => u.xp > 0)
             .sort(([, a], [, b]) => (b.xp || 0) - (a.xp || 0))
             .slice(0, 10);
 
         const medals = ["🥇", "🥈", "🥉"];
-        const lines = sorted.map(([uid, u], idx) => {
-            const m = guild.members.cache.get(uid);
-            const name = m?.displayName || `User ${uid.slice(-4)}`;
-            return `${medals[idx] || `\`${idx + 1}.\``} **${name}** — Niv. **${u.level || 0}** | ${u.xp || 0} XP`;
-        });
+        const lines = await Promise.all(sorted.map(async ([uid, u], idx) => {
+            const membre = guild.members.cache.get(uid);
+            const name = membre?.displayName || `Utilisateur (${uid})`;
+            return `${medals[idx] || `\`${idx + 1}.\``} **${name}** — Niveau **${u.level || 0}** | XP: ${u.xp || 0}`;
+        }));
 
-        return i.editReply({ embeds: [new EmbedBuilder()
+        const emb = new EmbedBuilder()
             .setTitle("🏆 TOP 10 — MEMBRES LES PLUS ACTIFS")
             .setColor("#f1c40f")
             .setDescription(lines.join("\n") || "Aucune donnée.")
-            .setTimestamp()
-        ]});
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'xp-give') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const target = options.getUser('cible');
+        const montant = options.getInteger('montant');
         const u = initUser(target.id);
-        u.xp += options.getInteger('montant'); save();
-        return i.editReply(`✅ **+${options.getInteger('montant')} XP** → ${target.tag} (Total : ${u.xp})`);
+        u.xp += montant; save();
+        return i.editReply(`✅ **+${montant} XP** donnés à ${target.tag} (Total : ${u.xp} XP)`);
     }
 
-    if (commandName === 'xp-remove') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getUser('cible');
-        const u = initUser(target.id);
-        u.xp = Math.max(0, u.xp - options.getInteger('montant')); save();
-        return i.editReply(`✅ **-${options.getInteger('montant')} XP** → ${target.tag} (Total : ${u.xp})`);
-    }
-
-    // ════════════ ÉCONOMIE ══════════════════════════════════════════════
+    // ════════════ ÉCONOMIE ════════════
     if (commandName === 'balance') {
         const target = options.getUser('cible') || user;
         const u = initUser(target.id);
-        return i.editReply({ embeds: [new EmbedBuilder()
+        const emb = new EmbedBuilder()
             .setTitle(`💰 SOLDE : ${target.username.toUpperCase()}`)
             .setColor("#2ecc71")
             .setThumbnail(target.displayAvatarURL())
             .addFields(
                 { name: "💎 Coins", value: `**${u.coins || 0}**`, inline: true },
                 { name: "🏅 Niveau", value: `${u.level || 0}`, inline: true },
-                { name: "🎒 Inventaire", value: u.inventory?.length > 0 ? u.inventory.join(", ") : "Vide", inline: false }
-            )
-        ]});
+                { name: "🎒 Inventaire", value: u.inventory?.length > 0 ? u.inventory.join(", ") : "Vide" }
+            );
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'pay') {
@@ -1304,14 +901,16 @@ client.on(Events.InteractionCreate, async i => {
         const montant = options.getInteger('montant');
         const raison = options.getString('raison') || "Aucune raison";
         if (target.id === user.id) return i.editReply("❌ Tu ne peux pas te payer toi-même.");
-        const u = initUser(user.id); const t = initUser(target.id);
+        const u = initUser(user.id);
+        const t = initUser(target.id);
         if (u.coins < montant) return i.editReply(`❌ Solde insuffisant. Tu as **${u.coins}** coins.`);
-        u.coins -= montant; t.coins += montant;
-        db.economy.transactions.push({ from: user.id, fromTag: user.tag, to: target.id, toTag: target.tag, amount: montant, reason: raison, timestamp: Date.now() });
+        u.coins -= montant;
+        t.coins += montant;
+        db.economy.transactions.push({ from: user.id, to: target.id, amount: montant, reason: raison, timestamp: Date.now() });
         save();
-        return i.editReply({ embeds: [new EmbedBuilder().setTitle("💸 TRANSFERT").setColor("#2ecc71")
-            .addFields({ name: "De", value: user.tag, inline: true }, { name: "Vers", value: target.tag, inline: true }, { name: "Montant", value: `**${montant} coins**`, inline: true }, { name: "Motif", value: raison })
-        ]});
+        const emb = new EmbedBuilder().setTitle("💸 TRANSFERT").setColor("#2ecc71")
+            .addFields({ name: "De", value: user.tag, inline: true }, { name: "Vers", value: target.tag, inline: true }, { name: "Montant", value: `**${montant} coins**`, inline: true }, { name: "Motif", value: raison });
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'daily') {
@@ -1321,33 +920,33 @@ client.on(Events.InteractionCreate, async i => {
             const restant = Math.ceil((86400000 - (now - u.lastDaily)) / 3600000);
             return i.editReply(`⏰ Reviens dans **${restant}h** pour ta récompense quotidienne.`);
         }
-        const reward = Math.floor(Math.random() * 201) + 100;
-        u.coins = (u.coins || 0) + reward; u.lastDaily = now; save();
-        return i.editReply(`🎁 Tu as reçu **${reward} coins** ! Solde : **${u.coins}** coins.`);
+        const reward = Math.floor(Math.random() * 200) + 100; // 100-300 coins
+        u.coins = (u.coins || 0) + reward;
+        u.lastDaily = now;
+        save();
+        return i.editReply(`🎁 Tu as reçu **${reward} coins** ! Solde total : **${u.coins}** coins.`);
     }
 
     if (commandName === 'shop') {
         const items = Object.entries(db.config.shop);
         if (items.length === 0) return i.editReply("🏪 La boutique est vide.");
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle("🏪 BOUTIQUE DU SERVEUR")
-            .setColor("#9b59b6")
-            .setDescription(items.map(([name, item]) =>
-                `**${name}** — \`${item.price} coins\`\n${item.description || ""} → <@&${item.roleId}>`
-            ).join("\n\n"))
-            .setFooter({ text: "Utilise /buy <article> pour acheter" })
-        ]});
+        const emb = new EmbedBuilder().setTitle("🏪 BOUTIQUE DU SERVEUR").setColor("#9b59b6")
+            .setDescription(items.map(([name, item]) => `**${name}** — ${item.price} coins\n${item.description || ""} → <@&${item.roleId}>`).join("\n\n"))
+            .setFooter({ text: "Utilise /buy <article> pour acheter" });
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'buy') {
         const nom = options.getString('article');
         const item = db.config.shop[nom];
-        if (!item) return i.editReply(`❌ Article **${nom}** introuvable.`);
+        if (!item) return i.editReply(`❌ Article **${nom}** introuvable dans la boutique.`);
         const u = initUser(user.id);
         if (u.coins < item.price) return i.editReply(`❌ Solde insuffisant. Tu as **${u.coins}** coins, il en faut **${item.price}**.`);
         u.coins -= item.price;
         if (!u.inventory) u.inventory = [];
-        u.inventory.push(nom); save();
+        u.inventory.push(nom);
+        save();
+        // Attribuer le rôle
         try { await member.roles.add(item.roleId); } catch {}
         return i.editReply(`✅ Tu as acheté **${nom}** ! Rôle <@&${item.roleId}> attribué.`);
     }
@@ -1355,230 +954,86 @@ client.on(Events.InteractionCreate, async i => {
     if (commandName === 'shop-add') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const nom = options.getString('nom');
-        db.config.shop[nom] = { price: options.getInteger('prix'), roleId: options.getRole('role').id, description: options.getString('description') || "" };
-        save();
-        return i.editReply(`✅ Article **${nom}** ajouté à la boutique.`);
+        const prix = options.getInteger('prix');
+        const role = options.getRole('role');
+        const desc = options.getString('description') || "";
+        db.config.shop[nom] = { price: prix, roleId: role.id, description: desc }; save();
+        return i.editReply(`✅ Article **${nom}** (${prix} coins → <@&${role.id}>) ajouté à la boutique.`);
     }
 
     if (commandName === 'shop-remove') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        delete db.config.shop[options.getString('nom')]; save();
-        return i.editReply(`✅ Article **${options.getString('nom')}** retiré.`);
+        const nom = options.getString('nom');
+        delete db.config.shop[nom]; save();
+        return i.editReply(`✅ Article **${nom}** retiré de la boutique.`);
     }
 
     if (commandName === 'coins-give') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const target = options.getUser('cible');
+        const montant = options.getInteger('montant');
         const u = initUser(target.id);
-        u.coins = (u.coins || 0) + options.getInteger('montant'); save();
-        return i.editReply(`✅ **+${options.getInteger('montant')} coins** → **${target.tag}** (Total : ${u.coins})`);
+        u.coins = (u.coins || 0) + montant; save();
+        return i.editReply(`✅ **+${montant} coins** donnés à **${target.tag}**. Solde : ${u.coins}`);
     }
 
-    if (commandName === 'coins-remove') {
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        const target = options.getUser('cible');
-        const u = initUser(target.id);
-        u.coins = Math.max(0, (u.coins || 0) - options.getInteger('montant')); save();
-        return i.editReply(`✅ **-${options.getInteger('montant')} coins** → **${target.tag}** (Total : ${u.coins})`);
-    }
-
-    if (commandName === 'transactions') {
-        const target = options.getUser('cible') || user;
-        const txs = db.economy.transactions
-            .filter(t => t.from === target.id || t.to === target.id)
-            .slice(-10)
-            .reverse();
-
-        if (txs.length === 0) return i.editReply("📊 Aucune transaction trouvée.");
-        const lines = txs.map(t => {
-            const dir = t.from === target.id ? "➡️ Envoyé" : "⬅️ Reçu";
-            const other = t.from === target.id ? t.toTag : t.fromTag;
-            return `${dir} **${t.amount} coins** ${t.from === target.id ? 'à' : 'de'} **${other}**\n> ${t.reason} | ${formatDate(t.timestamp)}`;
-        });
-
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle(`📊 Transactions de ${target.username}`)
-            .setColor("#3498db")
-            .setDescription(lines.join("\n\n").slice(0, 4096))
-        ]});
-    }
-
-    // ════════════ FACTURES ══════════════════════════════════════════════
-    if (commandName === 'facture') {
-        const client_user = options.getUser('client');
-        const ht = options.getNumber('ht');
-        const tva = ht * 0.20;
-        const ttc = ht + tva;
-        const objet = options.getString('objet');
-        const notes = options.getString('notes') || null;
-        const num = options.getString('numero') || `FAC-${String(db.config.facture_counter || 1).padStart(4, '0')}`;
-        db.config.facture_counter = (db.config.facture_counter || 1) + 1;
-
-        // Enregistrer la facture
-        db.factures[num] = {
-            numero: num,
-            client: client_user.id,
-            clientTag: client_user.tag,
-            emetteur: user.id,
-            emetteurTag: user.tag,
-            objet, ht, tva, ttc,
-            notes,
-            date: Date.now(),
-            statut: "Émise"
-        };
-        save();
-
-        const emb = new EmbedBuilder()
-            .setTitle("🧾 FACTURE OFFICIELLE")
-            .setColor("#2ecc71")
-            .setImage(db.config.gifs.facture)
-            .addFields(
-                { name: "📋 N° Facture", value: `\`${num}\``, inline: true },
-                { name: "📅 Date", value: new Date().toLocaleDateString('fr-FR'), inline: true },
-                { name: "✅ Statut", value: "Émise", inline: true },
-                { name: "👤 Client", value: `<@${client_user.id}> (${client_user.tag})`, inline: true },
-                { name: "🖊️ Émetteur", value: `<@${user.id}> (${user.tag})`, inline: true },
-                { name: "📦 Objet", value: objet },
-                { name: "💵 Prix HT", value: `${ht.toLocaleString('fr-FR', {minimumFractionDigits: 2})} €`, inline: true },
-                { name: "📊 TVA 20%", value: `${tva.toLocaleString('fr-FR', {minimumFractionDigits: 2})} €`, inline: true },
-                { name: "💰 Total TTC", value: `**${ttc.toLocaleString('fr-FR', {minimumFractionDigits: 2})} €**`, inline: true }
-            )
-            .setFooter({ text: `Paradise Overlord V20 — Facture enregistrée` })
-            .setTimestamp();
-
-        if (notes) emb.addFields({ name: "📝 Notes", value: notes });
-
-        // Envoyer aussi en DM au client
-        try {
-            await client_user.send({ embeds: [emb] });
-        } catch {}
-
-        return i.editReply({ embeds: [emb] });
-    }
-
-    if (commandName === 'facture-list') {
-        const filterClient = options.getUser('client');
-        let factures = Object.values(db.factures);
-        if (filterClient) factures = factures.filter(f => f.client === filterClient.id);
-        if (factures.length === 0) return i.editReply("📋 Aucune facture trouvée.");
-
-        factures = factures.slice(-10).reverse();
-        const lines = factures.map(f =>
-            `**${f.numero}** — ${f.objet}\n> Client : **${f.clientTag}** | TTC : **${f.ttc.toFixed(2)}€** | ${formatDate(f.date)}`
-        );
-
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle("📋 LISTE DES FACTURES")
-            .setColor("#2ecc71")
-            .setDescription(lines.join("\n\n").slice(0, 4096))
-            .setFooter({ text: `${Object.keys(db.factures).length} facture(s) au total` })
-        ]});
-    }
-
-    if (commandName === 'facture-voir') {
-        const num = options.getString('numero');
-        const f = db.factures[num];
-        if (!f) return i.editReply(`❌ Facture \`${num}\` introuvable.`);
-
-        const emb = new EmbedBuilder()
-            .setTitle(`🧾 FACTURE ${f.numero}`)
-            .setColor("#2ecc71")
-            .addFields(
-                { name: "📅 Date", value: formatDate(f.date), inline: true },
-                { name: "✅ Statut", value: f.statut, inline: true },
-                { name: "👤 Client", value: `<@${f.client}> (${f.clientTag})`, inline: true },
-                { name: "🖊️ Émetteur", value: `${f.emetteurTag}`, inline: true },
-                { name: "📦 Objet", value: f.objet },
-                { name: "💵 HT", value: `${f.ht.toFixed(2)}€`, inline: true },
-                { name: "📊 TVA", value: `${f.tva.toFixed(2)}€`, inline: true },
-                { name: "💰 TTC", value: `**${f.ttc.toFixed(2)}€**`, inline: true }
-            );
-        if (f.notes) emb.addFields({ name: "📝 Notes", value: f.notes });
-        return i.editReply({ embeds: [emb] });
-    }
-
-    if (commandName === 'devis') {
-        const client_user = options.getUser('client');
-        const ht = options.getNumber('ht');
-        const tva = ht * 0.20;
-        const ttc = ht + tva;
-        const validite = options.getInteger('validite') || 30;
-        const expiration = new Date(Date.now() + validite * 86400000);
-
-        const emb = new EmbedBuilder()
-            .setTitle("📄 DEVIS")
-            .setColor("#3498db")
-            .addFields(
-                { name: "📋 Référence", value: `DEV-${Date.now().toString().slice(-6)}`, inline: true },
-                { name: "📅 Date", value: new Date().toLocaleDateString('fr-FR'), inline: true },
-                { name: "⏰ Valide jusqu'au", value: expiration.toLocaleDateString('fr-FR'), inline: true },
-                { name: "👤 Client", value: `<@${client_user.id}>`, inline: true },
-                { name: "📦 Objet", value: options.getString('objet') },
-                { name: "💵 HT", value: `${ht.toFixed(2)}€`, inline: true },
-                { name: "📊 TVA 20%", value: `${tva.toFixed(2)}€`, inline: true },
-                { name: "💰 TTC", value: `**${ttc.toFixed(2)}€**`, inline: true }
-            )
-            .setFooter({ text: "Ce devis est valable sans engagement." })
-            .setTimestamp();
-
-        return i.editReply({ embeds: [emb] });
-    }
-
-    // ════════════ GIVEAWAY ══════════════════════════════════════════════
+    // ════════════ GIVEAWAY ════════════
     if (commandName === 'giveaway') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const prix = options.getString('prix');
         const duree = options.getInteger('duree');
         const gagnants = options.getInteger('gagnants');
         const chan = options.getChannel('salon') || i.channel;
-        const coins_requis = options.getInteger('coins_requis') || 0;
+
         const endTime = Date.now() + duree * 60000;
+        const endDate = new Date(endTime);
 
         const emb = new EmbedBuilder()
             .setTitle("🎉 GIVEAWAY !")
             .setColor("#e91e63")
             .addFields(
                 { name: "🏆 Prix", value: prix },
-                { name: "👑 Gagnants", value: `${gagnants}`, inline: true },
-                { name: "⏰ Fin", value: `<t:${Math.floor(endTime / 1000)}:R>`, inline: true },
-                { name: "🚀 Organisateur", value: `${user}`, inline: true },
-                ...(coins_requis > 0 ? [{ name: "💰 Coins requis", value: `${coins_requis}`, inline: true }] : [])
+                { name: "👑 Gagnants", value: `${gagnants}` },
+                { name: "⏰ Fin", value: `<t:${Math.floor(endTime / 1000)}:R>` },
+                { name: "🚀 Organisateur", value: `${user}` }
             )
-            .setFooter({ text: "Clique pour participer !" })
-            .setTimestamp(new Date(endTime));
+            .setFooter({ text: "Clique sur le bouton pour participer !" })
+            .setTimestamp(endDate);
 
-        const fetchedChan = await guild.channels.fetch(chan.id).catch(() => null);
-        if (!fetchedChan?.isTextBased()) return i.editReply("❌ Salon invalide.");
-
-        const msg = await fetchedChan.send({ embeds: [emb], components: [
+        const msg = await chan.send({ embeds: [emb], components: [
             new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`ga_join_PLACEHOLDER`).setLabel("🎉 Participer").setStyle(ButtonStyle.Primary)
             )
         ]});
 
-        db.giveaways[msg.id] = { prize: prix, endTime, channelId: chan.id, winnersCount: gagnants, participants: [], ended: false, coins_requis };
+        db.giveaways[msg.id] = { prize: prix, endTime, channelId: chan.id, winnersCount: gagnants, participants: [], ended: false };
         save();
 
-        await msg.edit({ components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`ga_join_${msg.id}`).setLabel("🎉 Participer").setStyle(ButtonStyle.Primary)
-        )]});
+        // Mettre à jour le bouton avec le vrai ID
+        await msg.edit({ components: [
+            new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`ga_join_${msg.id}`).setLabel("🎉 Participer").setStyle(ButtonStyle.Primary)
+            )
+        ]});
 
-        return i.editReply(`✅ Giveaway lancé dans <#${chan.id}> !`);
+        return i.editReply(`✅ Giveaway créé dans <#${chan.id}> !`);
     }
 
     if (commandName === 'giveaway-end') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        await endGiveaway(options.getString('message_id'), guild);
+        const msgId = options.getString('message_id');
+        await endGiveaway(msgId, guild);
         return i.editReply("✅ Giveaway terminé.");
     }
 
     if (commandName === 'giveaway-reroll') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        await endGiveaway(options.getString('message_id'), guild, true);
+        const msgId = options.getString('message_id');
+        await endGiveaway(msgId, guild, true);
         return i.editReply("🔄 Reroll effectué.");
     }
 
-    // ════════════ SONDAGE ═══════════════════════════════════════════════
+    // ════════════ SONDAGE ════════════
     if (commandName === 'poll') {
         const question = options.getString('question');
         const opts = [
@@ -1592,39 +1047,42 @@ client.on(Events.InteractionCreate, async i => {
         const emb = new EmbedBuilder()
             .setTitle(`📊 ${question}`)
             .setColor("#3498db")
-            .setDescription(opts.map(o => `**${o}**\n\`${"░".repeat(10)}\` 0%`).join("\n\n"))
+            .setDescription(opts.map((o, idx) => `**${o}**\n\`${"░".repeat(10)}\` 0% (0)`).join("\n\n"))
             .setFooter({ text: "Clique sur un bouton pour voter" })
             .setTimestamp();
 
-        const msg = await i.channel.send({ embeds: [emb], components: [
-            new ActionRowBuilder().addComponents(
-                opts.map((o, idx) => new ButtonBuilder()
-                    .setCustomId(`poll_PLACEHOLDER_${idx}`)
-                    .setLabel(`${emojis[idx]} ${o}`.slice(0, 80))
-                    .setStyle(ButtonStyle.Secondary)
-                )
+        const row = new ActionRowBuilder().addComponents(
+            opts.map((o, idx) => new ButtonBuilder()
+                .setCustomId(`poll_PLACEHOLDER_${idx}`)
+                .setLabel(`${emojis[idx]} ${o}`.slice(0, 80))
+                .setStyle(ButtonStyle.Secondary)
             )
-        ]});
+        );
+
+        const msg = await i.channel.send({ embeds: [emb], components: [row] });
 
         db.polls[msg.id] = { question, options: opts, votes: {}, channelId: i.channel.id };
         save();
 
-        await msg.edit({ components: [new ActionRowBuilder().addComponents(
+        // Mettre à jour les boutons avec le vrai ID
+        const realRow = new ActionRowBuilder().addComponents(
             opts.map((o, idx) => new ButtonBuilder()
                 .setCustomId(`poll_${msg.id}_${idx}`)
                 .setLabel(`${emojis[idx]} ${o}`.slice(0, 80))
                 .setStyle(ButtonStyle.Secondary)
             )
-        )]});
+        );
+        await msg.edit({ components: [realRow] });
 
         return i.editReply("✅ Sondage créé !");
     }
 
-    // ════════════ TICKETS ═══════════════════════════════════════════════
+    // ════════════ TICKETS ════════════
     if (commandName === 'ticket') {
-        if (!db.config.ticket_cat) return i.editReply("❌ Catégorie tickets non configurée (`/setup-tickets`).");
-        const existing = Object.entries(db.tickets).find(([, t]) => t.userId === user.id && !t.closed);
-        if (existing) return i.editReply(`❌ Tu as déjà un ticket ouvert : <#${existing[0]}>`);
+        if (!db.config.ticket_cat) return i.editReply("❌ Catégorie tickets non configurée. Utilise `/setup-tickets`.");
+
+        const existingTicket = Object.entries(db.tickets).find(([, t]) => t.userId === user.id && !t.closed);
+        if (existingTicket) return i.editReply(`❌ Tu as déjà un ticket ouvert : <#${existingTicket[0]}>`);
 
         const chan = await guild.channels.create({
             name: `ticket-${user.username}`,
@@ -1640,18 +1098,18 @@ client.on(Events.InteractionCreate, async i => {
         db.tickets[chan.id] = { userId: user.id, createdAt: Date.now(), closed: false };
         save();
 
+        const closeBtn = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`ticket_close_${chan.id}`).setLabel("🔒 Fermer le ticket").setStyle(ButtonStyle.Danger)
+        );
+
         await chan.send({
-            content: `<@${user.id}> Bienvenue ! Le staff va te répondre.`,
-            embeds: [new EmbedBuilder().setTitle("🎫 TICKET OUVERT").setColor("#2ecc71")
-                .addFields({ name: "Ouvert par", value: user.tag }, { name: "Créé le", value: formatDate(Date.now()) })
-                .setDescription("Décris ton problème ici.")],
-            components: [new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`ticket_close_${chan.id}`).setLabel("🔒 Fermer le ticket").setStyle(ButtonStyle.Danger)
-            )]
+            content: `<@${user.id}> Bienvenue dans ton ticket ! L'équipe staff va te répondre.`,
+            embeds: [new EmbedBuilder().setTitle("🎫 TICKET OUVERT").setColor("#2ecc71").addFields({ name: "Ouvert par", value: `${user.tag}` }, { name: "Créé le", value: new Date().toLocaleString('fr-FR') }).setDescription("Décris ton problème ci-dessous.")],
+            components: [closeBtn]
         });
 
         await sendLog(guild, new EmbedBuilder().setTitle("🎫 NOUVEAU TICKET").setColor("#2ecc71").addFields({ name: "Utilisateur", value: user.tag }, { name: "Salon", value: `<#${chan.id}>` }).setTimestamp());
-        return i.editReply(`✅ Ton ticket est ouvert : <#${chan.id}>`);
+        return i.editReply({ content: `✅ Ton ticket a été ouvert : <#${chan.id}>`, ephemeral: true } || `✅ Ticket ouvert : <#${chan.id}>`);
     }
 
     if (commandName === 'ticket-close') {
@@ -1665,22 +1123,46 @@ client.on(Events.InteractionCreate, async i => {
 
     if (commandName === 'ticket-add') {
         const ticket = db.tickets[i.channel.id];
-        if (!ticket) return i.editReply("❌ Pas un ticket.");
+        if (!ticket) return i.editReply("❌ Ce salon n'est pas un ticket.");
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const target = options.getMember('cible');
         await i.channel.permissionOverwrites.edit(target, { ViewChannel: true, SendMessages: true });
         return i.editReply(`✅ <@${target.id}> ajouté au ticket.`);
     }
 
-    if (commandName === 'ticket-rename') {
-        const ticket = db.tickets[i.channel.id];
-        if (!ticket) return i.editReply("❌ Pas un ticket.");
-        if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
-        await i.channel.setName(options.getString('nom'));
-        return i.editReply(`✅ Ticket renommé.`);
+    // ════════════ IA & BUSINESS ════════════
+    if (commandName === 'ask') {
+        const q = options.getString('q');
+        await i.editReply("🤖 Analyse en cours...");
+        const rep = await askMistral(q);
+        return i.editReply(`**🤖 PARADISE OVERLORD IA :**\n${rep}`);
     }
 
-    // ════════════ BUSINESS ══════════════════════════════════════════════
+    if (commandName === 'facture') {
+        const ht = options.getNumber('ht');
+        const tva = ht * 0.20;
+        const ttc = ht + tva;
+        const client_user = options.getUser('client');
+        const objet = options.getString('objet');
+        const num = options.getString('numero') || `INV-${Date.now().toString().slice(-6)}`;
+        const emb = new EmbedBuilder()
+            .setTitle("🧾 FACTURE OFFICIELLE")
+            .setColor("#2ecc71")
+            .setImage(db.config.gifs.facture)
+            .addFields(
+                { name: "📋 N° Facture", value: num, inline: true },
+                { name: "📅 Date", value: new Date().toLocaleDateString('fr-FR'), inline: true },
+                { name: "👤 Client", value: `${client_user}`, inline: true },
+                { name: "📦 Objet", value: objet },
+                { name: "💵 Prix HT", value: `${ht.toLocaleString('fr-FR')}€`, inline: true },
+                { name: "📊 TVA 20%", value: `${tva.toLocaleString('fr-FR')}€`, inline: true },
+                { name: "💰 Total TTC", value: `**${ttc.toLocaleString('fr-FR')}€**`, inline: true }
+            )
+            .setFooter({ text: `Facturé par ${user.tag}` })
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
+    }
+
     if (commandName === 'wl-start') {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         if (!db.config.wl_cat) return i.editReply("❌ Catégorie WL non configurée.");
@@ -1695,10 +1177,12 @@ client.on(Events.InteractionCreate, async i => {
                 ...(db.config.staff_role ? [{ id: db.config.staff_role, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }] : [])
             ]
         });
-        await chan.send({ embeds: [new EmbedBuilder().setTitle("📝 RECRUTEMENT STAFF").setColor("#3498db")
-            .setDescription(`Bienvenue <@${cible.id}> ! Un membre du staff va te contacter.`)
-            .addFields({ name: "Candidat", value: cible.user.tag }, { name: "Lancé par", value: user.tag })
-        ]});
+        await chan.send({
+            embeds: [new EmbedBuilder().setTitle("📝 RECRUTEMENT STAFF").setColor("#3498db")
+                .setDescription(`Bienvenue <@${cible.id}> ! Un membre du staff va bientôt te contacter pour la whitelist.`)
+                .addFields({ name: "Candidat", value: `${cible.user.tag}` }, { name: "Lancé par", value: user.tag })
+            ]
+        });
         return i.editReply(`✅ Salon WL créé : <#${chan.id}>`);
     }
 
@@ -1706,44 +1190,40 @@ client.on(Events.InteractionCreate, async i => {
         if (!isStaff(member)) return i.editReply("❌ Permission refusée.");
         const texte = options.getString('texte');
         const chan = options.getChannel('salon');
-        const couleur = options.getString('couleur') || '#5865F2';
+        const couleur = colorFromHex(options.getString('couleur') || '#5865F2');
         const titre = options.getString('titre') || '📢 Annonce';
-        const mention = options.getBoolean('mention') !== false;
-        const fetchedChan = await guild.channels.fetch(chan.id).catch(() => null);
-        if (!fetchedChan?.isTextBased()) return i.editReply("❌ Salon invalide.");
-        await fetchedChan.send({
-            content: mention ? "@everyone" : undefined,
-            embeds: [new EmbedBuilder().setTitle(titre).setDescription(texte).setColor(couleur.startsWith('#') ? couleur : `#${couleur}`).setTimestamp().setFooter({ text: `Annonce de ${user.tag}` })]
-        });
+        const emb = new EmbedBuilder().setTitle(titre).setDescription(texte).setColor(couleur).setTimestamp().setFooter({ text: `Annonce de ${user.tag}` });
+        await chan.send({ content: "@everyone", embeds: [emb] });
         return i.editReply(`✅ Annonce envoyée dans <#${chan.id}>.`);
     }
 
-    if (commandName === 'rappel') {
-        const mins = options.getInteger('minutes');
-        const msg = options.getString('message');
-        const chanId = i.channel.id;
-        setTimeout(async () => {
-            const chan = await guild.channels.fetch(chanId).catch(() => null);
-            if (chan?.isTextBased()) {
-                chan.send({ embeds: [new EmbedBuilder()
-                    .setTitle("⏰ RAPPEL !")
-                    .setColor("#e67e22")
-                    .setDescription(msg)
-                    .addFields({ name: "Demandé par", value: user.tag })
-                    .setTimestamp()
-                ], content: `<@${user.id}>` }).catch(() => {});
-            }
-        }, mins * 60000);
-        return i.editReply(`✅ Rappel programmé dans **${mins} minute(s)** !`);
+    // ════════════ INFOS ════════════
+    if (commandName === 'stats') {
+        const target = options.getUser('cible') || user;
+        const u = initUser(target.id);
+        const reasons = u.warnReasons?.slice(-3).map((w, idx) => `\`${idx + 1}.\` ${w.raison} (par ${w.by})`).join("\n") || "Aucun";
+        const emb = new EmbedBuilder()
+            .setTitle(`📊 DOSSIER : ${target.username.toUpperCase()}`)
+            .setColor("#2b2d31")
+            .setThumbnail(target.displayAvatarURL())
+            .addFields(
+                { name: "🔨 Bans", value: `\`${u.bans}\``, inline: true },
+                { name: "🔇 Mutes", value: `\`${u.mutes}\``, inline: true },
+                { name: "⚠️ Warns", value: `\`${u.warns}\``, inline: true },
+                { name: "🚫 Blacklisté", value: u.blacklisted ? "**OUI**" : "Non", inline: true },
+                { name: "⭐ XP / Niveau", value: `${u.xp || 0} XP | Niveau ${u.level || 0}`, inline: true },
+                { name: "💰 Coins", value: `${u.coins || 0}`, inline: true },
+                { name: "📋 Derniers warns", value: reasons }
+            )
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 
-    // ════════════ INFOS ═════════════════════════════════════════════════
     if (commandName === 'userinfo') {
         const target = options.getMember('cible') || member;
         const u = target.user;
         const roles = target.roles.cache.filter(r => r.id !== guild.roles.everyone.id).map(r => `<@&${r.id}>`).join(", ") || "Aucun";
-        const userData = db.users[u.id];
-        return i.editReply({ embeds: [new EmbedBuilder()
+        const emb = new EmbedBuilder()
             .setTitle(`👤 ${u.username}`)
             .setColor("#3498db")
             .setThumbnail(u.displayAvatarURL({ size: 256 }))
@@ -1752,117 +1232,106 @@ client.on(Events.InteractionCreate, async i => {
                 { name: "📛 Pseudo", value: target.displayName, inline: true },
                 { name: "🤖 Bot", value: u.bot ? "Oui" : "Non", inline: true },
                 { name: "📅 Compte créé", value: `<t:${Math.floor(u.createdTimestamp / 1000)}:D>`, inline: true },
-                { name: "📥 A rejoint", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:D>`, inline: true },
-                { name: "⭐ Niveau", value: userData ? `Niv. ${userData.level} (${userData.xp} XP)` : "0", inline: true },
-                { name: "💰 Coins", value: userData ? `${userData.coins}` : "0", inline: true },
-                { name: "⚠️ Warns", value: userData ? `${userData.warns}` : "0", inline: true },
+                { name: "📥 Rejoint le", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:D>`, inline: true },
                 { name: "🎭 Rôles", value: roles.length > 1024 ? roles.slice(0, 1020) + "..." : roles }
-            ).setTimestamp()
-        ]});
+            )
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'server-info') {
         const owner = await guild.fetchOwner();
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle(`ℹ️ ${guild.name}`)
+        const emb = new EmbedBuilder()
+            .setTitle(`ℹ️ ${guild.name.toUpperCase()}`)
             .setColor("#2b2d31")
             .setThumbnail(guild.iconURL())
             .addFields(
-                { name: "👑 Propriétaire", value: owner.user.tag, inline: true },
+                { name: "👑 Propriétaire", value: `${owner.user.tag}`, inline: true },
                 { name: "🆔 ID", value: guild.id, inline: true },
                 { name: "👥 Membres", value: `${guild.memberCount}`, inline: true },
-                { name: "📅 Créé", value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`, inline: true },
+                { name: "📅 Créé le", value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`, inline: true },
+                { name: "✅ Vérification", value: guild.verificationLevel.toString(), inline: true },
                 { name: "💎 Boosts", value: `${guild.premiumSubscriptionCount || 0}`, inline: true },
                 { name: "📢 Salons", value: `${guild.channels.cache.size}`, inline: true },
                 { name: "🎭 Rôles", value: `${guild.roles.cache.size}`, inline: true },
-                { name: "😀 Emojis", value: `${guild.emojis.cache.size}`, inline: true },
-                { name: "🛡️ Vérification", value: guild.verificationLevel.toString(), inline: true }
-            ).setTimestamp()
-        ]});
+                { name: "😀 Emojis", value: `${guild.emojis.cache.size}`, inline: true }
+            )
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'avatar') {
         const target = options.getUser('cible') || user;
-        return i.editReply({ embeds: [new EmbedBuilder()
+        const emb = new EmbedBuilder()
             .setTitle(`🖼️ Avatar de ${target.username}`)
             .setColor("#9b59b6")
-            .setImage(target.displayAvatarURL({ size: 512, dynamic: true }))
-        ]});
+            .setImage(target.displayAvatarURL({ size: 512, dynamic: true }));
+        return i.editReply({ embeds: [emb] });
     }
 
     if (commandName === 'ping') {
-        return i.editReply(`🏓 Latence WS : **${client.ws.ping}ms** | API : **${Date.now() - i.createdTimestamp}ms**`);
+        return i.editReply(`🏓 Latence : **${client.ws.ping}ms** | API : **${Date.now() - i.createdTimestamp}ms**`);
     }
 
     if (commandName === 'help') {
-        return i.editReply({ embeds: [new EmbedBuilder()
-            .setTitle("📖 PARADISE OVERLORD V20 — MANUEL COMPLET")
+        const emb = new EmbedBuilder()
+            .setTitle("📖 MANUEL — PARADISE OVERLORD V19")
             .setColor("#5865F2")
+            .setDescription("Système de gestion ultime du serveur.")
             .addFields(
-                { name: "🛡️ Modération", value: "`/ban` `/kick` `/mute` `/unmute` `/warn` `/unwarn` `/clear` `/bl` `/unbl` `/slowmode` `/lock` `/unlock` `/role-give` `/role-remove`" },
-                { name: "📊 Casier", value: "`/stats` `/warns-list` `/casier-reset`" },
-                { name: "🤖 Auto-Mod", value: "`/automod` (anti-spam, anti-liens, mots bannis, mentions)" },
-                { name: "🧠 IA Multi-Mode", value: "`/ask` `/ia-mode` `/ia-prompt` `/ia-info` `/ia-conversation` `/resume` `/traduit` `/corrige`" },
-                { name: "📈 XP", value: "`/rank` `/leaderboard` `/xp-give` `/xp-remove` `/setup-xp-role`" },
-                { name: "💰 Économie", value: "`/balance` `/pay` `/daily` `/shop` `/buy` `/coins-give` `/coins-remove` `/transactions`" },
-                { name: "🧾 Factures", value: "`/facture` `/facture-list` `/facture-voir` `/devis`" },
+                { name: "🛡️ Modération", value: "`/ban` `/kick` `/mute` `/unmute` `/warn` `/unwarn` `/clear` `/bl` `/unbl` `/slowmode` `/lock` `/unlock`" },
+                { name: "🤖 Auto-Mod", value: "`/automod` (anti-spam, anti-liens, mots bannis, anti-mentions)" },
+                { name: "📈 Système XP", value: "`/rank` `/leaderboard` `/xp-give` `/setup-xp-role`" },
+                { name: "💰 Économie", value: "`/balance` `/pay` `/daily` `/shop` `/buy` `/coins-give`" },
+                { name: "🏪 Boutique Staff", value: "`/shop-add` `/shop-remove`" },
                 { name: "🎉 Giveaway", value: "`/giveaway` `/giveaway-end` `/giveaway-reroll`" },
                 { name: "📊 Sondage", value: "`/poll`" },
-                { name: "🎫 Tickets", value: "`/ticket` `/ticket-close` `/ticket-add` `/ticket-rename`" },
-                { name: "📢 Business", value: "`/wl-start` `/message` `/announce` `/rappel`" },
-                { name: "⚙️ Setup", value: "`/setup-logs` `/setup-welcome` `/setup-staff` `/setup-blacklist` `/setup-whitelist` `/setup-tickets` `/setup-muted` `/setup-gif` `/setup-xp-role`" },
-                { name: "ℹ️ Infos", value: "`/userinfo` `/server-info` `/avatar` `/ping`" }
+                { name: "🎫 Tickets", value: "`/ticket` `/ticket-close` `/ticket-add`" },
+                { name: "🧠 IA & Business", value: "`/ask` `/facture` `/wl-start` `/message` `/announce`" },
+                { name: "⚙️ Configuration", value: "`/setup-logs` `/setup-welcome` `/setup-staff` `/setup-blacklist` `/setup-whitelist` `/setup-tickets` `/setup-muted` `/setup-gif` `/setup-ai` `/setup-xp-role`" },
+                { name: "ℹ️ Infos", value: "`/stats` `/userinfo` `/server-info` `/avatar` `/ping`" }
             )
-            .setFooter({ text: "Paradise Overlord V20 — Système Ultime Absolu" })
-            .setTimestamp()
-        ]});
+            .setFooter({ text: "Paradise Overlord V19 — Système Ultime" })
+            .setTimestamp();
+        return i.editReply({ embeds: [emb] });
     }
 });
 
 // ════════════════════════════════════════════
-//  11. ÉVÉNEMENTS DU SERVEUR
+//  10. ÉVÉNEMENTS DU SERVEUR
 // ════════════════════════════════════════════
 
-// Message → XP + Auto-Mod + Mode conversation IA
+// XP sur message
 client.on(Events.MessageCreate, async message => {
     if (!message.guild || message.author.bot) return;
     await automod(message);
     await addXP(message.author.id, message.guild);
-
-    // Mode conversation IA
-    if (AI_CONVERSATION_CHANNELS.has(message.channel.id)) {
-        if (message.content.trim().length < 2) return;
-        try {
-            await message.channel.sendTyping();
-            const rep = await askMistral(message.content, message.guild.id);
-            await message.reply(rep.slice(0, 2000)).catch(() => {});
-        } catch {}
-    }
 });
 
 // Message supprimé → log
 client.on(Events.MessageDelete, async message => {
     if (!message.guild || !db.config.logs || message.author?.bot) return;
-    const logChan = await message.guild.channels.fetch(db.config.logs).catch(() => null);
-    if (!logChan?.isTextBased() || !message.content) return;
-    await logChan.send({ embeds: [new EmbedBuilder()
+    const logChan = message.guild.channels.cache.get(db.config.logs);
+    if (!logChan || !message.content) return;
+    const emb = new EmbedBuilder()
         .setTitle("🗑️ MESSAGE SUPPRIMÉ")
         .setColor("#e74c3c")
         .addFields(
             { name: "Auteur", value: `${message.author?.tag || 'Inconnu'}`, inline: true },
             { name: "Salon", value: `<#${message.channel.id}>`, inline: true },
             { name: "Contenu", value: message.content.slice(0, 1024) || "—" }
-        ).setTimestamp()
-    ]}).catch(() => {});
+        )
+        .setTimestamp();
+    logChan.send({ embeds: [emb] }).catch(() => {});
 });
 
 // Message modifié → log
 client.on(Events.MessageUpdate, async (oldMsg, newMsg) => {
     if (!oldMsg.guild || !db.config.logs || oldMsg.author?.bot) return;
     if (oldMsg.content === newMsg.content) return;
-    const logChan = await oldMsg.guild.channels.fetch(db.config.logs).catch(() => null);
-    if (!logChan?.isTextBased()) return;
-    await logChan.send({ embeds: [new EmbedBuilder()
+    const logChan = oldMsg.guild.channels.cache.get(db.config.logs);
+    if (!logChan) return;
+    const emb = new EmbedBuilder()
         .setTitle("✏️ MESSAGE MODIFIÉ")
         .setColor("#f39c12")
         .addFields(
@@ -1870,34 +1339,33 @@ client.on(Events.MessageUpdate, async (oldMsg, newMsg) => {
             { name: "Salon", value: `<#${oldMsg.channel.id}>`, inline: true },
             { name: "Avant", value: (oldMsg.content || "—").slice(0, 512) },
             { name: "Après", value: (newMsg.content || "—").slice(0, 512) }
-        ).setTimestamp()
-    ]}).catch(() => {});
+        )
+        .setTimestamp();
+    logChan.send({ embeds: [emb] }).catch(() => {});
 });
 
-// Membre rejoint → bienvenue + log
 client.on(Events.GuildMemberAdd, async member => {
     if (db.config.welcome) {
         try {
             const chan = await member.guild.channels.fetch(db.config.welcome);
-            if (chan?.isTextBased()) {
-                await chan.send({ content: `<@${member.id}>`, embeds: [
-                    new EmbedBuilder()
-                        .setTitle(`👋 Bienvenue ${member.user.username} !`)
-                        .setDescription(`Bienvenue sur **${member.guild.name}** ! Tu es le membre **#${member.guild.memberCount}**.`)
-                        .setColor("#2ecc71")
-                        .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-                        .setImage(db.config.gifs.welcome)
-                        .setTimestamp()
-                ]});
+            if (chan && chan.isTextBased()) {
+                const emb = new EmbedBuilder()
+                    .setTitle(`👋 Bienvenue ${member.user.username} !`)
+                    .setDescription(`Bienvenue sur **${member.guild.name}** ! Tu es le membre **#${member.guild.memberCount}**.`)
+                    .setColor("#2ecc71")
+                    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+                    .setImage(db.config.gifs.welcome)
+                    .setTimestamp();
+                await chan.send({ content: `<@${member.id}>`, embeds: [emb] });
             }
-        } catch {}
+        } catch(e) { console.error("Erreur welcome:", e); }
     }
 
     if (db.config.logs) {
         try {
             const logChan = await member.guild.channels.fetch(db.config.logs);
-            if (logChan?.isTextBased()) {
-                await logChan.send({ embeds: [new EmbedBuilder()
+            if (logChan && logChan.isTextBased()) {
+                const emb = new EmbedBuilder()
                     .setTitle("📥 NOUVEAU MEMBRE")
                     .setColor("#2ecc71")
                     .addFields(
@@ -1906,77 +1374,80 @@ client.on(Events.GuildMemberAdd, async member => {
                         { name: "Compte créé", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
                     )
                     .setThumbnail(member.user.displayAvatarURL())
-                    .setTimestamp()
-                ]});
+                    .setTimestamp();
+                await logChan.send({ embeds: [emb] });
             }
-        } catch {}
+        } catch(e) { console.error("Erreur log membre:", e); }
     }
 
-    initUser(member.id); save();
+    initUser(member.id);
+    save();
 });
 
-// Membre part → log
+// Membre qui quitte → log
 client.on(Events.GuildMemberRemove, async member => {
     if (!db.config.logs) return;
-    try {
-        const logChan = await member.guild.channels.fetch(db.config.logs);
-        if (!logChan?.isTextBased()) return;
-        await logChan.send({ embeds: [new EmbedBuilder()
-            .setTitle("📤 MEMBRE PARTI")
-            .setColor("#e74c3c")
-            .addFields(
-                { name: "Membre", value: member.user.tag, inline: true },
-                { name: "ID", value: member.id, inline: true },
-                { name: "Sur le serveur depuis", value: member.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:R>` : "Inconnu" }
-            )
-            .setThumbnail(member.user.displayAvatarURL())
-            .setTimestamp()
-        ]});
-    } catch {}
+    const logChan = member.guild.channels.cache.get(db.config.logs);
+    if (!logChan) return;
+    const emb = new EmbedBuilder()
+        .setTitle("📤 MEMBRE PARTI")
+        .setColor("#e74c3c")
+        .addFields(
+            { name: "Membre", value: `${member.user.tag}`, inline: true },
+            { name: "ID", value: member.id, inline: true },
+            { name: "Était sur le serveur depuis", value: member.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:R>` : "Inconnu" }
+        )
+        .setThumbnail(member.user.displayAvatarURL())
+        .setTimestamp();
+    logChan.send({ embeds: [emb] }).catch(() => {});
 });
 
-// Rôles modifiés → log
+// Rôle ajouté/retiré → log
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     if (!db.config.logs) return;
-    const added = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
-    const removed = oldMember.roles.cache.filter(r => !newMember.roles.cache.has(r.id));
-    if (added.size === 0 && removed.size === 0) return;
-    try {
-        const logChan = await newMember.guild.channels.fetch(db.config.logs);
-        if (!logChan?.isTextBased()) return;
-        const emb = new EmbedBuilder().setTitle("🎭 RÔLES MODIFIÉS").setColor("#9b59b6").addFields({ name: "Membre", value: newMember.user.tag });
-        if (added.size > 0) emb.addFields({ name: "➕ Ajouté", value: added.map(r => `<@&${r.id}>`).join(", ") });
-        if (removed.size > 0) emb.addFields({ name: "➖ Retiré", value: removed.map(r => `<@&${r.id}>`).join(", ") });
-        await logChan.send({ embeds: [emb.setTimestamp()] });
-    } catch {}
+    const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+    const removedRoles = oldMember.roles.cache.filter(r => !newMember.roles.cache.has(r.id));
+    if (addedRoles.size === 0 && removedRoles.size === 0) return;
+
+    const logChan = newMember.guild.channels.cache.get(db.config.logs);
+    if (!logChan) return;
+    const emb = new EmbedBuilder().setTitle("🎭 RÔLES MODIFIÉS").setColor("#9b59b6")
+        .addFields({ name: "Membre", value: `${newMember.user.tag}` });
+    if (addedRoles.size > 0) emb.addFields({ name: "➕ Ajouté", value: addedRoles.map(r => `<@&${r.id}>`).join(", ") });
+    if (removedRoles.size > 0) emb.addFields({ name: "➖ Retiré", value: removedRoles.map(r => `<@&${r.id}>`).join(", ") });
+    emb.setTimestamp();
+    logChan.send({ embeds: [emb] }).catch(() => {});
 });
 
 // ════════════════════════════════════════════
-//  12. INITIALISATION
+//  11. INITIALISATION
 // ════════════════════════════════════════════
 client.once(Events.ClientReady, async () => {
-    console.log(`✅ Connecté : ${client.user.tag}`);
+    console.log(`✅ Connecté en tant que ${client.user.tag}`);
 
+    // Enregistrement des commandes
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log(`🚀 ${commands.length} commandes enregistrées.`);
-    } catch (e) { console.error("Erreur commandes:", e); }
+    } catch (e) {
+        console.error("Erreur enregistrement commandes:", e);
+    }
 
+    // Statut du bot (rotation)
     const statuses = [
         { type: ActivityType.Watching, text: "le serveur" },
-        { type: ActivityType.Playing, text: "Paradise Overlord V20" },
-        { type: ActivityType.Listening, text: "/help — Système Ultime" },
-        { type: ActivityType.Watching, text: `${client.guilds.cache.size} serveurs` }
+        { type: ActivityType.Playing, text: "Paradise Overlord V19" },
+        { type: ActivityType.Listening, text: "/help pour les commandes" }
     ];
-    let idx = 0;
+    let statusIdx = 0;
     client.user.setActivity(statuses[0].text, { type: statuses[0].type });
     setInterval(() => {
-        idx = (idx + 1) % statuses.length;
-        client.user.setActivity(statuses[idx].text, { type: statuses[idx].type });
+        statusIdx = (statusIdx + 1) % statuses.length;
+        client.user.setActivity(statuses[statusIdx].text, { type: statuses[statusIdx].type });
     }, 30000);
 
-    console.log("🔥 PARADISE OVERLORD V20 : SYSTÈME ULTIME ABSOLU EN LIGNE");
+    console.log("🔥 PARADISE OVERLORD V19 : SYSTÈME ULTIME EN LIGNE");
 });
 
 client.login(process.env.TOKEN);
