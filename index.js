@@ -42,7 +42,9 @@ let db = {
     polls: {},
     tickets: {},
     spam_tracker: {},
-    ia_channels: {}
+    ia_channels: {},
+    global_blacklist: {},  // userId → { reason, by, at }
+    absences: {}           // userId → { raison, debut, fin, annonce_msg_id }
 };
 
 const DEFAULT_CONFIG = () => ({
@@ -722,7 +724,29 @@ const commands = [
     new SlashCommandBuilder().setName('add-quest').setDescription('➕ Ajouter une quête (Admin)')
         .addStringOption(o => o.setName('nom').setDescription('Nom').setRequired(true))
         .addStringOption(o => o.setName('description').setDescription('Description').setRequired(true))
-        .addIntegerOption(o => o.setName('recompense').setDescription('Récompense coins').setRequired(true).setMinValue(1))
+        .addIntegerOption(o => o.setName('recompense').setDescription('Récompense coins').setRequired(true).setMinValue(1)),
+
+    // ABSENCE
+    new SlashCommandBuilder().setName('absent').setDescription('🏖️ Déclarer une absence (Staff/Admin)')
+        .addStringOption(o => o.setName('raison').setDescription('Raison de l\'absence').setRequired(true))
+        .addStringOption(o => o.setName('debut').setDescription('Date de début (ex: 25/07/2025)').setRequired(true))
+        .addStringOption(o => o.setName('fin').setDescription('Date de retour prévue (ex: 01/08/2025)').setRequired(true))
+        .addChannelOption(o => o.setName('salon').setDescription('Salon pour annoncer l\'absence (optionnel)').setRequired(false)),
+
+    new SlashCommandBuilder().setName('absent-fin').setDescription('✅ Déclarer son retour d\'absence')
+        .addChannelOption(o => o.setName('salon').setDescription('Salon pour annoncer le retour (optionnel)').setRequired(false)),
+
+    new SlashCommandBuilder().setName('absences').setDescription('📋 Voir les absences actuelles du staff'),
+
+    // BLACKLIST GLOBALE (bot entier)
+    new SlashCommandBuilder().setName('bot-blacklist').setDescription('🔴 Blacklister un utilisateur du bot entier (Admin uniquement)')
+        .addUserOption(o => o.setName('cible').setDescription('Utilisateur à blacklister').setRequired(true))
+        .addStringOption(o => o.setName('raison').setDescription('Raison').setRequired(true)),
+
+    new SlashCommandBuilder().setName('bot-unblacklist').setDescription('🟢 Retirer un utilisateur de la blacklist globale (Admin uniquement)')
+        .addUserOption(o => o.setName('cible').setDescription('Utilisateur').setRequired(true)),
+
+    new SlashCommandBuilder().setName('bot-blacklist-list').setDescription('📋 Voir la blacklist globale du bot (Admin uniquement)'),
 ];
 
 // ========== 12. CLIENT DISCORD ==========
@@ -833,6 +857,24 @@ client.on(Events.InteractionCreate, async interaction => {
     const { commandName, options, guild, member, user, channel } = interaction;
     const config = initConfig(guild.id);
 
+    // ======== VÉRIFICATION BLACKLIST GLOBALE ========
+    // (sauf pour les commandes admin de gestion de la blacklist elle-même)
+    if (db.global_blacklist[user.id] && !['bot-unblacklist', 'bot-blacklist-list'].includes(commandName)) {
+        const bl = db.global_blacklist[user.id];
+        return interaction.editReply({
+            embeds: [createEmbed(
+                "🔴 ACCÈS REFUSÉ — BLACKLIST GLOBALE",
+                `Tu as été blacklisté du bot et ne peux plus utiliser aucune commande.`,
+                COLORS.ERROR,
+                [
+                    { name: "📋 Raison", value: bl.reason, inline: false },
+                    { name: "👤 Blacklisté par", value: bl.by, inline: true },
+                    { name: "📅 Date", value: bl.at, inline: true }
+                ]
+            )]
+        });
+    }
+
     // ======== PING ========
     if (commandName === 'ping') {
         return interaction.editReply(`🏓 Latence WS : **${client.ws.ping}ms** | API : **${Date.now() - interaction.createdTimestamp}ms**`);
@@ -849,7 +891,9 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: "📊 Sondages & Tickets", value: "`/poll` `/ticket` `/ticket-close` `/ticket-add`", inline: false },
             { name: "ℹ️ Infos", value: "`/stats` `/userinfo` `/server-info` `/avatar` `/ping`", inline: false },
             { name: "⚙️ Setup", value: "`/setup-logs` `/setup-welcome` `/setup-staff` `/setup-tickets` `/setup-muted` `/setup-xp-role` `/setup-gif` `/setup-ai` `/setup-blacklist` `/setup-whitelist`", inline: false },
-            { name: "📋 Divers", value: "`/facture` `/announce` `/message` `/wl-start` `/quests` `/add-quest` `/automod`", inline: false }
+            { name: "📋 Divers", value: "`/facture` `/announce` `/message` `/wl-start` `/quests` `/add-quest` `/automod`", inline: false },
+            { name: "🏖️ Absences", value: "`/absent` `/absent-fin` `/absences`", inline: false },
+            { name: "🔴 Blacklist Bot (Admin)", value: "`/bot-blacklist` `/bot-unblacklist` `/bot-blacklist-list`", inline: false }
         ], null, null, { text: "Paradise Overlord V19 — Système Ultime" });
         return interaction.editReply({ embeds: [embed] });
     }
@@ -1616,6 +1660,172 @@ client.on(Events.InteractionCreate, async interaction => {
             };
         });
         return interaction.editReply({ embeds: [createEmbed("🏆 TES QUÊTES", "Progression :", COLORS.GOLD, quests)] });
+    }
+
+    // ======== ABSENT ========
+    if (commandName === 'absent') {
+        if (!isStaff(member, guild.id)) return interaction.editReply("❌ Réservé au staff.");
+        const raison = options.getString('raison');
+        const debut = options.getString('debut');
+        const fin = options.getString('fin');
+        const targetChannel = options.getChannel('salon');
+
+        if (!db.absences) db.absences = {};
+        db.absences[user.id] = {
+            raison,
+            debut,
+            fin,
+            username: user.username,
+            avatar: user.displayAvatarURL(),
+            depuis: Date.now()
+        };
+        await save();
+
+        const embed = createEmbed(
+            "🏖️ ABSENCE DÉCLARÉE",
+            `**${user.username}** sera absent(e).`,
+            COLORS.WARNING,
+            [
+                { name: "📋 Raison", value: raison, inline: false },
+                { name: "📅 Début", value: debut, inline: true },
+                { name: "🔙 Retour prévu", value: fin, inline: true }
+            ],
+            null,
+            user.displayAvatarURL(),
+            { text: "Utilise /absent-fin pour déclarer ton retour" }
+        );
+
+        if (targetChannel) {
+            await targetChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+        if (config.logs) {
+            const lc = guild.channels.cache.get(config.logs);
+            if (lc) await lc.send({ embeds: [embed] }).catch(() => {});
+        }
+        return interaction.editReply({ embeds: [embed] });
+    }
+
+    // ======== ABSENT-FIN ========
+    if (commandName === 'absent-fin') {
+        if (!isStaff(member, guild.id)) return interaction.editReply("❌ Réservé au staff.");
+        if (!db.absences) db.absences = {};
+
+        const absence = db.absences[user.id];
+        if (!absence) return interaction.editReply("❌ Tu n'as pas d'absence déclarée.");
+
+        const targetChannel = options.getChannel('salon');
+        const embed = createEmbed(
+            "✅ RETOUR D'ABSENCE",
+            `**${user.username}** est de retour !`,
+            COLORS.SUCCESS,
+            [
+                { name: "📋 Raison de l'absence", value: absence.raison, inline: false },
+                { name: "📅 Période", value: `Du **${absence.debut}** au **${absence.fin}**`, inline: false }
+            ],
+            null,
+            user.displayAvatarURL()
+        );
+
+        delete db.absences[user.id];
+        await save();
+
+        if (targetChannel) {
+            await targetChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+        if (config.logs) {
+            const lc = guild.channels.cache.get(config.logs);
+            if (lc) await lc.send({ embeds: [embed] }).catch(() => {});
+        }
+        return interaction.editReply({ embeds: [embed] });
+    }
+
+    // ======== ABSENCES (liste) ========
+    if (commandName === 'absences') {
+        if (!db.absences) db.absences = {};
+        const list = Object.entries(db.absences);
+        if (list.length === 0) return interaction.editReply("✅ Aucune absence déclarée en ce moment.");
+
+        const fields = list.map(([uid, abs]) => ({
+            name: `👤 ${abs.username || uid}`,
+            value: `📋 ${abs.raison}\n📅 Du **${abs.debut}** au **${abs.fin}**`,
+            inline: false
+        }));
+
+        return interaction.editReply({ embeds: [createEmbed("📋 ABSENCES DU STAFF", `${list.length} absence(s) en cours :`, COLORS.WARNING, fields)] });
+    }
+
+    // ======== BOT-BLACKLIST ========
+    if (commandName === 'bot-blacklist') {
+        if (!isAdmin(user.id)) return interaction.editReply("❌ Réservé à l'admin du bot (toi uniquement).");
+        const target = options.getUser('cible');
+        const raison = options.getString('raison');
+        if (target.id === user.id) return interaction.editReply("❌ Tu ne peux pas te blacklister toi-même.");
+        if (target.id === ADMIN_ID) return interaction.editReply("❌ Impossible de blacklister l'admin du bot.");
+
+        if (!db.global_blacklist) db.global_blacklist = {};
+        db.global_blacklist[target.id] = {
+            reason: raison,
+            by: user.username,
+            at: new Date().toLocaleDateString('fr-FR')
+        };
+        await save();
+
+        // Tenter d'envoyer un DM à la cible
+        await target.send({
+            embeds: [createEmbed(
+                "🔴 BLACKLIST GLOBALE — BOT ENTIER",
+                `Tu as été blacklisté(e) de **Paradise Overlord V19** et ne peux plus utiliser aucune commande sur aucun serveur.`,
+                COLORS.ERROR,
+                [{ name: "📋 Raison", value: raison, inline: false }]
+            )]
+        }).catch(() => {});
+
+        return interaction.editReply({
+            embeds: [createEmbed(
+                "🔴 BLACKLIST GLOBALE AJOUTÉE",
+                `**${target.username}** est désormais blacklisté(e) du bot entier.`,
+                COLORS.ERROR,
+                [
+                    { name: "📋 Raison", value: raison, inline: false },
+                    { name: "🆔 ID", value: target.id, inline: true }
+                ],
+                null,
+                target.displayAvatarURL()
+            )]
+        });
+    }
+
+    // ======== BOT-UNBLACKLIST ========
+    if (commandName === 'bot-unblacklist') {
+        if (!isAdmin(user.id)) return interaction.editReply("❌ Réservé à l'admin du bot.");
+        const target = options.getUser('cible');
+        if (!db.global_blacklist) db.global_blacklist = {};
+        if (!db.global_blacklist[target.id]) return interaction.editReply(`❌ **${target.username}** n'est pas dans la blacklist globale.`);
+
+        delete db.global_blacklist[target.id];
+        await save();
+
+        await target.send({
+            embeds: [createEmbed("🟢 BLACKLIST RETIRÉE", `Tu as été retiré(e) de la blacklist globale de **Paradise Overlord V19**. Tu peux de nouveau utiliser le bot.`, COLORS.SUCCESS)]
+        }).catch(() => {});
+
+        return interaction.editReply(`✅ **${target.username}** a été retiré(e) de la blacklist globale.`);
+    }
+
+    // ======== BOT-BLACKLIST-LIST ========
+    if (commandName === 'bot-blacklist-list') {
+        if (!isAdmin(user.id)) return interaction.editReply("❌ Réservé à l'admin du bot.");
+        if (!db.global_blacklist) db.global_blacklist = {};
+        const list = Object.entries(db.global_blacklist);
+        if (list.length === 0) return interaction.editReply("✅ Aucun utilisateur dans la blacklist globale.");
+
+        const fields = list.map(([uid, data]) => ({
+            name: `🆔 ${data.by ? `Blacklisté par ${data.by}` : 'Inconnu'}`,
+            value: `<@${uid}> — ${data.reason}\n📅 ${data.at}`,
+            inline: false
+        }));
+
+        return interaction.editReply({ embeds: [createEmbed("🔴 BLACKLIST GLOBALE DU BOT", `${list.length} utilisateur(s) blacklisté(s) :`, COLORS.ERROR, fields)] });
     }
 
     // ======== ADD-QUEST ========
